@@ -1,0 +1,7 @@
+@-moz-document url-prefix("chrome:") {
+    #PanelUI-menu-button {
+        list-style-image: url("../files/zenlogo.svg") !important;
+			-moz-context-properties: fill !important;
+    fill: currentColor !important; 
+    }
+}

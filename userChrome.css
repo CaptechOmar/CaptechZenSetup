@@ -4,6 +4,7 @@
 @import "modules/contexticons.css";
 @import "modules/trackpad_gestures.css";
 @import "modules/Pinned-extensions.css";
+@import "modules/menulogo.css";
 
 
 /* Remove new tab background color after 1.8b */
@@ -381,14 +382,6 @@ button[aria-label="Mute tab"]{
 		margin: 0px 0px !important;
 		background: context-fill !important;
 	}
-}
-
-@-moz-document url-prefix("chrome:") {
-    #PanelUI-menu-button {
-        list-style-image: url("file:///home/captech/.zen/q8kf9t5u.Default%20(release)/chrome/zenlogo.svg") !important;;
-			-moz-context-properties: fill !important;
-    fill: currentColor !important; 
-    }
 }
 
 
