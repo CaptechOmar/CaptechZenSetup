@@ -1,0 +1,14 @@
+#history-panelmenu {
+    /* Path to the file */
+    list-style-image: url("../files/archive.svg") !important;
+    
+    /* These two lines are the 'magic' for Firefox/Browser UI */
+    -moz-context-properties: fill !important;
+    fill: currentColor !important; 
+
+    scale: 1.2;
+    padding-inline-start: 0px !important;
+    height: 15px !important;
+	margin-top: 1px !important;
+
+}

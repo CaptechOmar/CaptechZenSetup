@@ -5,6 +5,7 @@
 @import "modules/trackpad_gestures.css";
 @import "modules/Pinned-extensions.css";
 @import "modules/menulogo.css";
+@import "modules/historyicon.css";
 
 
 /* Remove new tab background color after 1.8b */
@@ -355,22 +356,6 @@ slot:nth-child(1) {
     }
   }
 }
-
-#history-panelmenu {
-    /* Path to the file you just saved */
-    list-style-image: url("file:///home/captech/.zen/q8kf9t5u.Default%20(release)/chrome/archive.svg") !important;
-    
-    /* These two lines are the 'magic' for Firefox/Browser UI */
-    -moz-context-properties: fill !important;
-    fill: currentColor !important; 
-
-    scale: 1.2;
-    padding-inline-start: 0px !important;
-    height: 15px !important;
-	margin-top: 1px !important;
-
-}
-
 
 button[aria-label="Mute tab"]{
 	display: none !important;
