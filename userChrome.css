@@ -1,7 +1,7 @@
 /*@import "natsumi-config.css";*/
 @import "modules/URLbar.css";
 @import "modules/essentials.css";
-@import "modules/contexticons.css";
+/*@import "modules/contexticons.css";*/
 @import "modules/trackpad_gestures.css";
 @import "modules/Pinned-extensions.css";
 @import "modules/menulogo.css";
@@ -244,3 +244,13 @@ button[aria-label="Mute tab"]{
 }
 
 
+@media {
+  menupopup, panel {
+    --panel-background: var(--zen-main-browser-background-toolbar) !important;
+  }
+  /* Fix text color on Firefox confirmation pop-ups when applying Zen colors on light mode */
+  #confirmation-hint {
+    --arrowpanel-color: var(--sidebar-text-color) !important;
+    border: none !important;
+  }
+}
