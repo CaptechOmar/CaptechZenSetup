@@ -1,0 +1,189 @@
+.urlbar-background{
+  border-radius: 12px !important;
+}
+
+/* ======= FLOATING URL BAR ANIMATION/BLUR ========= */
+#urlbar-input::placeholder {
+  opacity: 0.4 !important;
+}
+
+#urlbar[open] {
+  border-radius: 13px !important;
+  overflow: hidden !important;
+}
+
+/* === BLUR PAGE WHEN URLBAR IS OPEN === */
+#browser:has(#urlbar[open]) .browserContainer {
+  filter: blur(1rem) brightness(50%) saturate(180%) !important;
+  opacity: 1 !important;
+  scale: 1.075 !important;
+  transition: all 0.25s cubic-bezier(0.175, 0.385, 0.12, 1) !important;
+}
+
+.browserContainer:not(:has(#urlbar[open])) {
+  filter: none !important;
+  opacity: 1 !important;
+  scale: 1 !important;
+  transition:
+    filter 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.35),
+    opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.35),
+    scale 0.2s cubic-bezier(0.175, 0.885, 0.32, 1) !important;
+}
+
+/* Keyframes for fade-in and unblur effect */
+@keyframes fadeInUnblur {
+  from {
+    opacity: 0;
+    filter: blur(30px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+/* Keyframes for fade-out effect when URL bar closes */
+@keyframes fadeOutBlur {
+  from {
+    opacity: 1;
+    filter: blur(1rem) brightness(50%) saturate(180%);
+  }
+  to {
+    opacity: 0;
+    filter: none;
+  }
+}
+
+/* Fade-out the browser container when URL bar is closed */
+#browser:not(:has(#urlbar[open])) .browserContainer {
+  animation: fadeOutBlur 0.3s ease-in-out !important;
+  filter: none !important;
+  opacity: 1 !important;
+  scale: 1 !important;
+  transition: filter 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.35), opacity 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.35), scale 0.2s cubic-bezier(0.175, 0.885, 0.32, 1) !important;
+}
+
+/* Apply fade-in and blur when URL bar opens */
+#urlbar[open] {
+  animation: fadeInUnblur 0.15s ease !important;
+  backdrop-filter: blur(0px) !important;
+}
+
+/* URL bar backgrounds - shared properties */
+#urlbar-background {
+  padding: 10px !important;
+}
+
+#urlbar:not([open]) > #urlbar-background {
+  border-radius: 13px !important;
+}
+
+#urlbar[open] > #urlbar-background {
+  border-radius: 12px !important;
+}
+
+#urlbar-background {
+  background: light-dark(rgba(255, 255, 255, 0.342), rgba(0, 0, 0, 0.342)) !important;
+  box-shadow: 0 0px 3px light-dark(rgba(255, 255, 255, 0.3), rgba(0, 0, 0, 0.3)) !important;
+}
+
+#urlbar[open] #urlbar-background {
+  background: light-dark(rgba(255, 255, 255, 0.2), rgba(0, 0, 0, 0.2)) !important;
+  box-shadow: 0 20px 30px light-dark(rgba(255, 255, 255, 0.35), rgba(0, 0, 0, 0.35)) !important;
+  backdrop-filter: blur(64px) !important;
+}
+
+#urlbar-zoom-button {
+  left: 30px !important;
+}
+
+#urlbar[open] #urlbar-zoom-button {
+  left: 0 !important;
+}
+
+#urlbar[open] #urlbar-results > :nth-child(n+6) {
+  display: none !important;
+}
+
+#urlbar .urlbar-input,
+.urlbar-input-container {
+  text-align: center !important;
+}
+
+/*------------ URLbar loading & hover animation --------------*/
+/*#urlbar .urlbar-input-container {
+  border-radius: 13px !important;
+  overflow: hidden;
+  position: relative;
+}
+
+#urlbar .urlbar-input-container::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--zen-primary-color) 5%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 30%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 75%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 100%, black),
+    color-mix(in srgb, var(--zen-primary-color) 50%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 15%, black)
+  );
+  background-size: 300% 100%;
+  background-repeat: repeat-x;
+  clip-path: inset(0 round 13px);
+  animation: urlbar-gradient 8s linear infinite;
+  opacity: 0;
+  filter: blur(20px) brightness(1);
+  transition: opacity 0.5s ease-in-out;
+  z-index: 0;
+  pointer-events: none;
+}
+
+#main-window:has(.tabbrowser-tab[selected][busy]) .urlbar-input-container::before,
+#urlbar:not([open]):hover .urlbar-input-container::before {
+  opacity: 0.485;
+}
+
+@keyframes urlbar-gradient {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 300% 50%; }
+}
+*/
+/*------ urlbar open hover links gradient animation -------*/
+#urlbar[open] #urlbar-results > * {
+  position: relative;
+  overflow: hidden;
+}
+
+#urlbar[open] #urlbar-results > *::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    45deg,
+    color-mix(in srgb, var(--zen-primary-color) 5%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 30%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 75%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 100%, black),
+    color-mix(in srgb, var(--zen-primary-color) 50%, black),  
+    color-mix(in srgb, var(--zen-primary-color) 15%, black)
+  );
+  background-size: 300% 100%;
+  background-repeat: repeat-x;
+  clip-path: inset(0 round 12px);
+  animation: urlbar-gradient 8s linear infinite;
+  opacity: 0;
+  filter: blur(20px) brightness(1);
+  transition: opacity 0.5s ease-in-out;
+  z-index: -1;
+  pointer-events: none;
+}
+
+#urlbar[open] #urlbar-results > *:hover::before {
+  opacity: 0.81;
+}

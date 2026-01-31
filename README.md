@@ -1,6 +1,1 @@
-# CaptechZenSetup
-# CaptechZenSetup
-# CaptechZenSetup
-# CaptechZenSetup
-# CaptechZenSetup
-# CaptechZenSetup
+This is my chrome folder of my zen setup

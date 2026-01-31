@@ -1,0 +1,177 @@
+/* -------------------------- ESSENTIALS -------------------------- */
+/* ESSENTIAL COLOR WITH SHADOW, SPACING & ROUNDED EDGES */
+.zen-essentials-container .tabbrowser-tab {
+  /* Basic tab background styling */
+  .tab-background {
+    background-color: light-dark(rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.15)) !important;
+    box-shadow: 0 0px 3px light-dark(rgba(255, 255, 255, 0), rgba(0, 0, 0, 0)) !important;
+    border-radius: 9px !important;
+  }
+
+  /* Hover effect for tab background */
+  &:hover .tab-background {
+    background-color: light-dark(rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0.25)) !important;
+    
+  }
+/*
+  /* Apply ::before and ::after styles conditionally based on zen.theme.essentials-favicon-bg preference */
+  @media (-moz-bool-pref: "zen.theme.essentials-favicon-bg") {
+    .tab-background {
+      /* Styling for the ::before pseudo-element, providing the translucent background */
+      &::before {
+        content: "" !important; /* Ensure content is set */
+        position: absolute !important; /* Needed for positioning */
+        top:  0px !important; /* Adjusted for 4px total padding (2px top, 2px bottom)   */
+        left: 0px !important; /* Adjusted for 4px total padding (2px left, 2px right) */
+        width: calc(100% -4px) !important;
+        height: calc(100% -4px) !important;
+        mask-image: none !important;
+        background: light-dark(rgba(255, 255, 255, 0.3), rgba(88, 84, 84, 0.24)) !important;
+        border-radius: calc(var(--border-radius-medium) + -2px) !important;
+        opacity: 1 !important; /* Ensure it's visible by default */
+      }
+
+      /* Base styling for the ::after pseudo-element, which will be blurred on selection */
+      &::after {
+        content: "" !important;
+        position: absolute !important;
+        /* Use the larger dimensions from the first snippet for the blur effect */
+        left: -50% !important;
+        top: -50% !important;
+        width: 200% !important;
+        height: 200% !important;
+        display: block !important;
+        z-index: -1 !important; /* Keep it behind the ::before and main content */
+        opacity: 0 ; /* Initially hidden, will fade in on selection */
+        /* Filter will be applied on selected state */
+      }
+    }
+  }
+}
+
+.zen-essentials-container {
+  grid-template-columns: repeat(auto-fit, minmax(60px, auto)) !important;
+
+  .tabbrowser-tab {
+    overflow: visible !important;
+
+    /* Styles for selected or visually selected tabs */
+    &[selected],
+    &[visuallyselected] {
+      .tab-icon-image {
+       filter: drop-shadow(0px 0px 4px rgba(0, 0, 0, 0.5));
+      }
+
+      > .tab-stack > .tab-background {
+        /*border: none !important;
+
+        /* Ensure ::before remains visible on selected state, if desired */
+        &::before {
+          opacity: 1 !important; /* Keep the translucent background visible */
+        }
+
+        /* Apply the blur filter and make ::after visible only when selected */
+        &::after {
+         filter: saturate(150%) blur(15px) !important; /* From first snippet */
+          opacity: 1 !important; /* Make it visible */
+        }
+      }
+    }
+  }
+}
+
+/* General app wrapper for animations and specific tab behaviors */
+#zen-main-app-wrapper:not(:has(#zen-welcome)) {
+  /* Tab click animations */
+  #tabbrowser-tabs:not([movingtab]) {
+    .tabbrowser-tab {
+      transition: scale 0.2s ease !important;
+    }
+
+    .tabbrowser-tab:active {
+      scale: 0.96 !important;
+    }
+
+    .tabbrowser-tab:has(.tab-close-button:hover) {
+      scale: 1 !important;
+    }
+  }
+
+  /* Split view tabs */
+  tab-group[split-view-group] {
+    .tabbrowser-tab {
+      > .tab-stack > .tab-background {
+        &::after {
+          mask-image: linear-gradient(to right, black, transparent 60%);
+        }
+      }
+    }
+  }
+}
+
+/* Styling for collapsed toolbar essential items */
+.collapsed-toolbar .essential-item {
+  justify-content: center; /* Ensures items are centered */
+  align-items: center;
+  margin: auto; /* Adjust if needed */
+}
+
+/* -------------------------- ANIMATIONS FOR ESSENTIALS -------------------------- */
+#zen-main-app-wrapper:not(:has(#zen-welcome)) {
+  .tabbrowser-tab {
+    scale: unset !important;
+
+    &[zen-glance-tab] {
+      box-shadow: none !important;
+
+      .tab-label-container {
+        display: none !important;
+      }
+    }
+
+    .tab-stack {
+      transition: transform 0.2s ease !important;
+    }
+
+    .tab-background,
+    .tab-icon-stack,
+    .tab-label-container {
+      transition: opacity 0.2s ease !important;
+    }
+
+    .tab-background {
+      transition: background 0.3s ease, box-shadow 0.3s ease, border 1.3s ease !important;
+      overflow: hidden !important;
+      position: relative !important; /* Crucial for positioning ::before and ::after */
+
+      /* Transitions for ::before, ensuring smooth changes */
+      &::before {
+        transition: opacity 0.3s ease, width 0.3s ease, background 0.3s ease;
+        /* Opacity is set to 1 in the main block to ensure visibility */
+      }
+
+      /* Transitions for ::after, ensuring smooth fade-in/out of blur */
+      &::after {
+        transition: opacity 0.3s ease-out;
+        /* Opacity is handled by the selected state */
+      }
+    }
+
+    /* Selected/visually selected states (excluding glance tabs) */
+    &[selected]:not([zen-glance-tab="true"]),
+    &[visuallyselected]:not([zen-glance-tab="true"]) {
+      > .tab-stack > .tab-background {
+        &::after {
+          /* Filter and opacity are set in the main .zen-essentials-container block for selected state */
+        }
+      }
+    }
+
+    /* Active (clicked) state animation */
+    &:active {
+      .tab-stack {
+        transform: scale(0.95, 0.95) !important;
+      }
+    }
+  }
+}

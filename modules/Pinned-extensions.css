@@ -1,0 +1,79 @@
+/* --- PINNED EXTENSIONS (STANDALONE) --- */
+/*
+  Original code from the Nebula theme for Zen Browser.
+  Modified to remove theme-specific variables and preferences.
+
+  Customizable values (originally variables):
+  - Base Color: rgba(60, 60, 67, 0.5)
+  - Hover Color: rgba(75, 75, 82, 0.7)
+  - Shadow Color: rgba(0, 0, 0, 0.3)
+  - Primary/Accent Color (for gradient): #0a84ff
+  - Border Radius: 6px
+  - Gap/Padding: 5px
+*/
+
+:root[customizing] #TabsToolbar-customization-target {
+  visibility: visible !important;
+}
+
+.zen-workspace-pinned-tabs-section {
+  display: flex !important;
+  flex-direction: column;
+}
+
+:root[zen-single-toolbar="true"] #nav-bar {
+  margin-bottom: 8px !important;
+}
+
+/* Combined rules for different toolbar layouts */
+#tabbrowser-tabs {
+  min-width: 100% !important;
+  height: calc(100% - 27px) !important;
+  transform: translateY(-2.5px) !important;
+}
+
+#TabsToolbar-customization-target {
+  display: flex !important;
+  flex-direction: row !important;
+  flex-wrap: wrap !important;
+  gap: 3px !important; /* Replaced var(--zen-toolbox-padding) */
+}
+
+#TabsToolbar-customization-target #Zen-tabs-wrapper {
+  max-height: 700px !important;
+}
+
+#TabsToolbar-customization-target .unified-extensions-item-action-button {
+  padding: 0 !important;
+}
+
+#TabsToolbar-customization-target .unified-extensions-item {
+  margin-inline: 2px !important;
+  padding: 0 !important;
+  height: 32px !important;
+  width: 32px !important;
+  flex-grow: 1 !important;
+  order: -1 !important;
+  background-color: rgba(255, 255, 255, 0.2) !important; /* Replaced var(--nebula-color) */
+  box-shadow: 0 0 3px transparent !important;
+  border-radius: 8px !important; /* Replaced calc(var(--nebula-border-radius) - 0.5px) */
+  transition: background-color 0.3s ease, box-shadow 0.3s ease !important;
+}
+
+#TabsToolbar-customization-target .unified-extensions-item:hover {
+  background-color: rgba(255, 255, 255, 0.5) !important; /* Replaced var(--nebula-color-hover) */
+  box-shadow: 0 0 3px rgba(0, 0, 0, 0.3) !important; /* Replaced var(--nebula-color-shadow) */
+}
+
+
+#TabsToolbar-customization-target .toolbarbutton-badge {
+  display: none !important;
+}
+
+html:not([zen-sidebar-expanded="true"]):not([zen-single-toolbar="true"])
+#TabsToolbar-customization-target .unified-extensions-item {
+  width: 24px !important;
+  height: 32px !important;
+  margin-inline: 6px !important;
+  margin-block: 2px !important;
+}
