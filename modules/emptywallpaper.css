@@ -1,0 +1,10 @@
+#browser:has([zen-empty-tab="true"][selected="true"]) .browserStack {
+    background-image: url("../files/tr-g.png")!important;
+
+    background-position: center !important;
+    background-repeat: no-repeat !important;
+
+    background-size: cover !important;
+
+    opacity: 1 !important;
+}
