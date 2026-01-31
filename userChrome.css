@@ -254,3 +254,10 @@ button[aria-label="Mute tab"]{
     border: none !important;
   }
 }
+[viewId="PanelUI-history"] {
+  padding-top: 16% !important;
+}
+:where(#customizationui-widget-multiview) panelview:not([extension]) {
+  max-width: 15em !important;;
+  max-height: 30em;
+}
