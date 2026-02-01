@@ -261,3 +261,29 @@ button[aria-label="Mute tab"]{
   max-width: 15em !important;;
   max-height: 30em;
 }
+
+.toolbarbutton-text,
+.subviewbutton,
+.subview-subheader,
+.tab-preview-title,
+.tab-preview-uri,
+.menu-text,
+.menu-icon,
+[id*="context"],
+.share-tab-url-item,
+[data-l10n-id*="create"], 
+#zenToolbarThemePicker,
+[id="fxa-menu-header-title"],
+.permission-popup-permission-label,
+.zen-permission-popup-permission-state-label,
+.zen-site-data-section-header,
+.toolbarbutton-icon
+{
+  color: var(--toolbox-textcolor) !important;
+}
+
+.panel-header {
+  & > h1 > span {
+      color: var(--toolbox-textcolor) !important;
+
+  }
