@@ -277,7 +277,13 @@ button[aria-label="Mute tab"]{
 .permission-popup-permission-label,
 .zen-permission-popup-permission-state-label,
 .zen-site-data-section-header,
-.toolbarbutton-icon
+.toolbarbutton-icon,
+.downloadDetails,
+.downloadTarget,
+.downloadIconShow,
+.downloadIconCancel,
+.downloadIconRetry,
+[id=emptyDownloads]
 {
   color: var(--toolbox-textcolor) !important;
 }
