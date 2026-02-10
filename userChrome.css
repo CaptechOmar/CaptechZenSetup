@@ -27,7 +27,7 @@
 	--zen-dialog-background: var(--zen-main-browser-background-toolbar) !important;
 	--panel-separator-color: rgba(0, 0, 0, 0.17) !important;
 	--zen-appcontent-border: none !important;color: var(--toolbox-textcolor) !important;
-	--button-hover-bg-color: rgba(0, 0, 0, 0.17) !important;
+	--button-hover-bg-color: rgba(0, 0, 0, 0.9) !important;
 	--panel-item-hover-bgcolor: var(--button-hover-bg-color) !important;
 	--in-content-sidebar-width:220px !important;
   }
@@ -36,6 +36,11 @@
 /*noinspection CssInvalidFunction*/
 #zen-workspaces-button {
 	overflow: visible !important;
+  
+  & toolbarbutton {
+    fill-opacity: 1 !important;
+    opacity: 1 !important;
+  }
 	
   
 	.subviewbutton {
@@ -56,7 +61,7 @@
 	  /*noinspection CssInvalidFunction*/
 	  &[active] {
 		border: 2px solid light-dark(rgba(0, 0, 0, 0.2), rgba(255, 255, 255, 0.4)) !important;
-		background-color: var(--toolbarbutton-active-background) !important;
+		background-color: rgba(0,0,0,0.2) !important;
 		backdrop-filter: saturate(var(--natsumi-mat-hz-saturation)) contrast(var(--natsumi-mat-hz-contrast)) !important;
 		box-shadow: 0 0 4px rgba(0, 0, 0, 0.3) !important;
 	  }
