@@ -239,7 +239,7 @@ slot:nth-child(1) {
 .ctrlTab-preview,
 #ctrlTab-showAll {
   color: var(--toolbox-textcolor) !important;
-  box-shadow: none !important;
+  text-shadow: none !important;
 }
 
 button[aria-label="Mute tab"]{
