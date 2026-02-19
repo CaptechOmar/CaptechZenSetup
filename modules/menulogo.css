@@ -2,6 +2,6 @@
     #PanelUI-menu-button {
         list-style-image: url("../files/zenlogo.svg") !important;
 			-moz-context-properties: fill !important;
-    fill: currentColor !important; 
+    fill: color-mix(in srgb, currentColor 70%, transparent) !important; 
     }
 }

@@ -4,7 +4,7 @@
     
     /* These two lines are the 'magic' for Firefox/Browser UI */
     -moz-context-properties: fill !important;
-    fill: currentColor !important; 
+    fill: color-mix(in srgb, currentColor 70%, transparent) !important; 
 
     scale: 1.2;
     padding-inline-start: 0px !important;
@@ -18,7 +18,7 @@
     
     /* These two lines are the 'magic' for Firefox/Browser UI */
     -moz-context-properties: fill !important;
-    fill: var(--toolbox-textcolor) !important;
+    fill: color-mix(in srgb, currentColor 70%, transparent) !important;
 
     scale: 1.1;
     padding-inline-start: 0px !important;
