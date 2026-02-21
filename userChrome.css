@@ -304,7 +304,8 @@ button[aria-label="Mute tab"]{
 .folders-tabs-list-item-label,
 .tab-list-item-secondary-label,
 .tabs-list-header,
-[id=zen-folder-tabs-list-search]
+[id=zen-folder-tabs-list-search],
+[id=editBookmarkPanelContent]
 {
   color: var(--toolbox-textcolor) !important;
 }
@@ -322,6 +323,10 @@ button[aria-label="Mute tab"]{
 menupopup > menu::after {
   -moz-context-properties: fill, fill-opacity !important;
   fill: var(--toolbox-textcolor) !important;
+}
+
+findbar {
+  background: var(--zen-main-browser-background-toolbar) !important;
 }
 
 [id=downloadsPanel]{

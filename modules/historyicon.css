@@ -17,10 +17,11 @@
     list-style-image: url("../files/download.svg") !important;
     
     /* These two lines are the 'magic' for Firefox/Browser UI */
+    
     -moz-context-properties: fill !important;
-    fill: color-mix(in srgb, currentColor 70%, transparent) !important;
-
-    scale: 1.1;
+    fill: var(--toolbarbutton-icon-fill) !important;
+    
+    scale: 1.1 !important;
     padding-inline-start: 0px !important;
     height: 15px !important;
 	margin-top: -0.005px !important;
