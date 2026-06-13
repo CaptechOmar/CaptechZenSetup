@@ -1,0 +1,15 @@
+/* ================================================================
+   Zen Browser — Website Appearance Toggle
+   ================================================================ */
+
+/* Hide text label */
+#zen-colorscheme-toggle .toolbarbutton-text {
+  display: none !important;
+}
+
+/* Allow SVG context-fill to work so icon matches toolbar icon color */
+#zen-colorscheme-toggle .toolbarbutton-icon {
+  -moz-context-properties: fill, fill-opacity !important;
+  fill: var(--toolbarbutton-icon-fill, currentColor) !important;
+  fill-opacity: var(--toolbarbutton-icon-fill-opacity, 1) !important;
+}

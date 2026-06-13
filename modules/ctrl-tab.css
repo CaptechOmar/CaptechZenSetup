@@ -1,0 +1,88 @@
+/* ctrl tab visuals and animations */
+#ctrlTab-panel {
+  --panel-background: color-mix(in srgb, var(--zen-primary-color) 40%, var(--zen-colors-tertiary)) !important;
+  transition: all 0.1s cubic-bezier(0.175, 0.885, 0.32, 1.1) 0.2s !important;
+  scale: 0.5;
+  border-radius: 2em !important;
+  border: 3px solid color-mix(in srgb, #fff, transparent 50%); !important;
+  
+  
+}
+
+#ctrlTab-panel:has(.ctrlTab-preview:not([hidden="true"])) {
+  scale: 1 !important;  
+}
+
+slot:nth-child(1) {
+  border-radius: 1em !important;
+  /* margin-left: -5px !important; */
+  
+}
+slot:last-child {
+  /* margin-right: -5px !important; */
+}
+
+.ctrlTab-preview-inner {
+  margin-top: -10px !important;
+  margin-bottom: -1px !important;
+  transition: all 0.2s ease-in-out;
+   
+
+  .ctrlTab-canvas {
+    border-radius: 1em !important;
+    overflow: hidden;
+
+    img {
+      background-color: #000000 !important;
+    }
+  }
+
+  .ctrlTab-favicon-container {
+    justify-content: center !important;
+    transition: all 0.5s ease-in-out;
+
+    image {
+      border-radius: 50% !important;
+      transition: all 0.5s ease-in-out !important;
+      /* 			scale: 1.25 !important; */
+    }
+  }
+
+  .ctrlTab-label {
+     margin-top: -3.5em !important;
+  }
+}
+
+.ctrlTab-preview:focus > .ctrlTab-preview-inner {
+  outline: none !important;
+  /* border: none !important;   */
+  background-color: var(--sidebar-background-color) !important;
+  border-radius: 1.5em !important;
+  scale: 1.09 !important;
+
+  .ctrlTab-favicon-container {
+    image {
+      padding: 2px !important;
+    }
+  }
+}
+
+.ctrlTab-preview,
+#ctrlTab-showAll {
+  color: var(--toolbox-textcolor) !important;
+  text-shadow: none !important;
+}
+
+button[aria-label="Mute tab"]{
+	display: none !important;
+}
+
+.tab-icon-overlay {  
+   
+    &:is([soundplaying], [muted], [activemedia-blocked]) {
+		margin: 0px 0px !important;
+		background: context-fill !important;
+	}
+}
+
+

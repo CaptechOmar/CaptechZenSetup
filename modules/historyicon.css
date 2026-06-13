@@ -6,11 +6,16 @@
     -moz-context-properties: fill !important;
     fill: color-mix(in srgb, currentColor 70%, transparent) !important; 
 
-    scale: 1.2;
+    
     padding-inline-start: 0px !important;
     height: 15px !important;
 	margin-top: 1px !important;
 
+}
+#history-panelmenu image{
+    list-style-image: url("../files/archive.svg") !important;
+    scale: 0.9 !important;
+    padding: 2px !important;
 }
 #downloads-indicator-anchor {
     /* Path to the file */

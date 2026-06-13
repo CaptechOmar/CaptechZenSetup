@@ -1,0 +1,30 @@
+{
+  "id": "zen-live-calendar",
+  "name": "Live Calendar",
+  "description": "Brings the live calendar functionality from Arc to Zen, making it feel as native as possible.",
+  "homepage": "https://github.com/Vertex-Mods/Zen-Live-Calendar",
+  "readme": "https://raw.githubusercontent.com/Vertex-Mods/Zen-Live-Calendar/refs/heads/main/README.md",
+  "image": "https://github.com/Vertex-Mods/Zen-Live-Calendar/blob/main/image.png?raw=true",
+  "scripts": {
+    "live-calendar.uc.mjs": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ],
+      "version": "2.0",
+      "name": "Live Calendar",
+      "description": "Arc-style calendar preview for Google Calendar tabs (Firefox/Zen)"
+    }
+  },
+  "author": "Vertex",
+  "version": "1.0.0",
+  "tags": [
+    "Zen",
+    "fx-autoconfig",
+    "Calendar",
+    "Arc",
+    "Live"
+  ],
+  "createdAt": "2025-06-18",
+  "updatedAt": "2025-06-18",
+  "fork": ["zen"]
+}

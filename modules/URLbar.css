@@ -1,3 +1,10 @@
+/* URL Bar Width */
+
+#urlbar[open][zen-floating-urlbar="true"]{
+  min-width:min(90%, 52rem) !important;
+}
+
+
 .urlbar-background{
   border-radius: 12px !important;
 }
@@ -14,7 +21,7 @@
 
 /* === BLUR PAGE WHEN URLBAR IS OPEN === */
 #browser:has(#urlbar[open]) .browserContainer {
-  filter: blur(1rem) brightness(50%) saturate(180%) !important;
+  /* filter: blur(1rem) brightness(50%) saturate(180%) !important; */
   opacity: 1 !important;
   scale: 1.075 !important;
   transition: all 0.25s cubic-bezier(0.175, 0.385, 0.12, 1) !important;

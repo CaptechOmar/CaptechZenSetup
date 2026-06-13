@@ -1,0 +1,49 @@
+{
+  "id": "zen-tidy-downloads",
+  "name": "Tidy Downloads",
+  "description": "Clean up your downloads with AI",
+  "homepage": "https://github.com/Vertex-Mods/Zen-Tidy-Downloads",
+  "readme": "https://raw.githubusercontent.com/Vertex-Mods/Zen-Tidy-Downloads/refs/heads/main/README.md",
+  "image": "https://github.com/Vertex-Mods/Zen-Tidy-Downloads/blob/main/image.png?raw=true",
+  "style": {
+    "chrome": "chrome.css"
+  },
+  "scripts": {
+    "tidy-downloads-utils.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ],
+      "loadOrder": 1
+    },
+    "tidy-downloads-sync.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ],
+      "loadOrder": 2
+    },
+    "tidy-downloads.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ],
+      "loadOrder": 3
+    },
+    "zen-stuff.uc.js": {
+      "include": [
+        "chrome://browser/content/browser.xhtml"
+      ],
+      "loadOrder": 3
+    }
+  },
+  "preferences": "preferences.json",
+  "author": "Vertex",
+  "version": "3.1.0",
+  "tags": [
+    "sine",
+    "fx-autoconfig",
+    "Downloads",
+    "Tidy Pack"
+  ],
+  "createdAt": "2025-05-24",
+  "updatedAt": "2026-02-04",
+  "fork": ["zen"]
+}

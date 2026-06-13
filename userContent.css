@@ -1,1 +1,68 @@
 @import "natsumi-pages/natsumi-pages.css";
+
+/* userContent.css */
+
+@-moz-document url-prefix("about:preferences") {
+    /* Target the Root and Body */ 
+    #preferences-root
+     {
+        background-color: transparent !important;
+    }
+
+    /* Target the main stack and layout boxes  */
+    #preferences-stack,
+    hbox[flex="1"],
+    vbox.navigation,
+    vbox.main-content {
+        background-color: transparent !important;
+    }
+
+    /* Target the inner pane containers */ 
+    .pane-container, 
+    #mainPrefPane {
+        background-color: transparent !important;
+    }
+    
+  groupbox{
+  box-shadow:
+    light-dark(#fff3, #0003) 0px -36px 30px 0px inset,
+    rgba(0, 0, 0, 0.06) 0px 2px 1px,
+    rgba(0, 0, 0, 0.09) 0px 4px 2px,
+    rgba(0, 0, 0, 0.09) 0px 8px 4px,
+    rgba(0, 0, 0, 0.09) 0px 16px 8px,
+    rgba(0, 0, 0, 0.09) 0px 32px 16px !important;
+  background-color: light-dark(#fff8, #0005) !important;
+  padding: 25px !important;
+  border-radius:10px !important;
+  }
+  moz-card{
+  box-shadow:
+    light-dark(#fff3, #0003) 0px -36px 30px 0px inset,
+    rgba(0, 0, 0, 0.06) 0px 2px 1px,
+    rgba(0, 0, 0, 0.09) 0px 4px 2px,
+    rgba(0, 0, 0, 0.09) 0px 8px 4px,
+    rgba(0, 0, 0, 0.09) 0px 16px 8px,
+    rgba(0, 0, 0, 0.09) 0px 32px 16px !important;
+  background-color: light-dark(#fff8, #0005) !important;
+  padding: 25px !important;
+  border-radius:10px !important;
+  }
+  input.with-icon[type="search"]{
+  box-shadow:
+    light-dark(#fff3, #0003) 0px -36px 30px 0px inset,
+    rgba(0, 0, 0, 0.06) 0px 2px 1px,
+    rgba(0, 0, 0, 0.09) 0px 4px 2px,
+    rgba(0, 0, 0, 0.09) 0px 8px 4px,
+    rgba(0, 0, 0, 0.09) 0px 16px 8px,
+    rgba(0, 0, 0, 0.09) 0px 32px 16px !important;
+  background-color: light-dark(#fff8, #0005) !important;
+  border:none !important;
+  }
+  .sticky-container{
+  background-color: transparent !important;
+  }
+  #search-container{
+  background-color: transparent !important;
+  }
+}
+

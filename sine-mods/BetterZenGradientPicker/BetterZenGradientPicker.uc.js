@@ -1,0 +1,4781 @@
+// ==UserScript==
+// @name           BetterZenGradientPicker
+// @version        1.7
+// @description    A Sine mod which aims to overhaul Zen's gradient picker with tons of new features :))
+// @author         JustAdumbPrsn
+// @include        main
+// ==/UserScript==
+
+/**
+ * ZenPickerMods - Main Controller
+ */
+const ZenPickerMods = {
+  modules: [],
+
+  init() {
+    this.log("initializing");
+    const pm = new PaletteModule();
+    const favs = new FavoritesModule();
+    this.modules.push(new OpacityModule());
+    this.modules.push(new HarmonyModule());
+    this.modules.push(new RotationModule());
+    this.modules.push(pm);
+    this.modules.push(favs);
+    this.modules.push(new DynamicThemeModule());
+
+    // Expose modules for cross-module usage
+    this.paletteMod = pm;
+    this.favoritesMod = favs;
+
+    this.waitForZen();
+  },
+
+  waitForZen() {
+    let retryCount = 0;
+    const interval = setInterval(() => {
+      if (window.gZenThemePicker && window.gZenWorkspaces?.promiseInitialized) {
+        clearInterval(interval);
+        window.gZenWorkspaces.promiseInitialized.then(() => {
+          this.startModules(window.gZenThemePicker);
+        });
+      }
+      if (retryCount++ > 20) clearInterval(interval);
+    }, 500);
+  },
+
+  startModules(picker) {
+    this.log("Starting modules...");
+
+    // 1. Unlock Total Dot Limit to 6
+    try {
+      if (window.nsZenThemePicker) {
+        window.nsZenThemePicker.MAX_DOTS = 6;
+      }
+      if (picker.constructor) {
+        picker.constructor.MAX_DOTS = 6;
+      }
+    } catch (e) {
+      this.error("Failed to set MAX_DOTS", e);
+    }
+
+    // 2. Initialize Modules
+    for (const module of this.modules) {
+      try {
+        module.init(picker);
+      } catch (e) {
+        this.error(`Failed start: ${module.constructor.name}`, e);
+      }
+    }
+  },
+
+  /**
+   * Storage - Per-Workspace Preference storage in about:config
+   */
+  Storage: {
+    PREFIX: "zen.theme.rotation.",
+
+    _getKey(uuid) {
+      if (!uuid) return null;
+      const san = uuid
+        .toString()
+        .replace(/[{}]/g, "")
+        .replace(/[^a-zA-Z0-9.-]/g, "_");
+      return this.PREFIX + san;
+    },
+
+    getRotation(uuid) {
+      const key = this._getKey(uuid);
+      if (!key) return undefined;
+      try {
+        if (Services.prefs.prefHasUserValue(key)) {
+          const val = Services.prefs.getCharPref(key);
+          const num = parseInt(val, 10);
+          if (!isNaN(num)) return num;
+        }
+      } catch (e) {}
+      return undefined;
+    },
+
+    setRotation(uuid, angle) {
+      const key = this._getKey(uuid);
+      if (!key) return;
+      const val = Math.round(angle).toString();
+      try {
+        Services.prefs.setCharPref(key, val);
+      } catch (e) {}
+    },
+  },
+
+  /**
+   * FavoritesStorage - File-based persistence with in-memory cache
+   */
+  FavoritesStorage: {
+    _cache: null,
+    _saveTimer: null,
+    _path: null,
+    OLD_PREF: "zen.theme.picker.favorites",
+
+    _getPath() {
+      if (!this._path) {
+        this._path = PathUtils.join(
+          PathUtils.profileDir,
+          "chrome",
+          "zen-gradient-favorites.json",
+        );
+      }
+      return this._path;
+    },
+
+    async load() {
+      try {
+        this._cache = await IOUtils.readJSON(this._getPath());
+        if (!Array.isArray(this._cache)) this._cache = [];
+        ZenPickerMods.log(`Loaded ${this._cache.length} favorites from file`);
+        return;
+      } catch (e) {
+        // File doesn't exist yet — try migrating from old pref
+      }
+
+      // Auto-migrate from old about:config pref
+      try {
+        if (Services.prefs.prefHasUserValue(this.OLD_PREF)) {
+          const raw = Services.prefs.getCharPref(this.OLD_PREF);
+          this._cache = JSON.parse(raw);
+          if (!Array.isArray(this._cache)) this._cache = [];
+          // Write to file and clear old pref
+          await this._writeNow();
+          Services.prefs.clearUserPref(this.OLD_PREF);
+          ZenPickerMods.log(
+            `Migrated ${this._cache.length} favorites from about:config to file`,
+          );
+          return;
+        }
+      } catch (e) {
+        ZenPickerMods.error("Migration from old pref failed", e);
+      }
+
+      this._cache = [];
+    },
+
+    get() {
+      return this._cache || [];
+    },
+
+    save(favs) {
+      this._cache = favs;
+      // Debounced write — 500ms
+      if (this._saveTimer) clearTimeout(this._saveTimer);
+      this._saveTimer = setTimeout(() => this._writeNow(), 500);
+    },
+
+    async _writeNow() {
+      try {
+        const data = JSON.stringify(this._cache || [], null, 2);
+        await IOUtils.writeUTF8(this._getPath(), data);
+      } catch (e) {
+        ZenPickerMods.error("Failed to write favorites file", e);
+      }
+    },
+  },
+
+  Toast: {
+    _timers: new Map(),
+
+    _reflow(container) {
+      if (!container) return;
+      const toasts = Array.from(container.children).filter((node) =>
+        node?.classList?.contains("zen-toast"),
+      );
+      let top = 0;
+      const spacing = 8;
+      toasts.forEach((toast) => {
+        // Use layout height (not transformed height) so spacing stays stable
+        // while scale/opacity animations are running.
+        const height = Math.max(
+          42,
+          Math.round(toast.offsetHeight || toast.clientHeight || 42),
+        );
+        toast.style.transition = "top 0.22s cubic-bezier(0.22, 1, 0.36, 1)";
+        toast.style.top = `${top}px`;
+        top += height + spacing;
+      });
+    },
+
+    show(message, toastId = "zen-gradient-toast", duration = 1800) {
+      try {
+        const ui = window.gZenUIManager;
+        const container = document.getElementById("zen-toast-container");
+        if (!container) return;
+
+        const id = String(toastId || "zen-gradient-toast");
+        const existing = container.querySelector(
+          `.zen-toast[data-zen-toast-id="${id}"]`,
+        );
+        if (existing) {
+          existing.remove();
+          this._reflow(container);
+        }
+
+        const prevTimer = this._timers.get(id);
+        if (prevTimer) {
+          clearTimeout(prevTimer);
+          this._timers.delete(id);
+        }
+
+        const wrapper = document.createXULElement("hbox");
+        wrapper.classList.add("zen-toast");
+        wrapper.setAttribute("data-zen-toast-id", id);
+        const vbox = document.createXULElement("vbox");
+        const label = document.createXULElement("label");
+        label.textContent = message;
+        vbox.appendChild(label);
+        wrapper.appendChild(vbox);
+
+        container.removeAttribute("hidden");
+        container.appendChild(wrapper);
+        this._reflow(container);
+
+        const finish = () => {
+          wrapper.remove();
+          this._reflow(container);
+          if (!container.querySelector(".zen-toast")) {
+            container.setAttribute("hidden", true);
+          }
+        };
+
+        const closeToast = () => {
+          this._timers.delete(id);
+          if (Services.prefs.getBoolPref("ui.popup.disable_autohide")) return;
+          if (ui?.motion?.animate) {
+            ui.motion
+              .animate(
+                wrapper,
+                { opacity: [1, 0], scale: [1, 0.5] },
+                { duration: 0.2, bounce: 0 },
+              )
+              .then(finish);
+          } else {
+            finish();
+          }
+        };
+
+        if (!wrapper.style.transform) {
+          wrapper.style.transform = "scale(0)";
+        }
+        if (ui?.motion?.animate) {
+          ui.motion.animate(
+            wrapper,
+            { scale: 1 },
+            { type: "spring", bounce: 0.2, duration: 0.5 },
+          );
+        } else {
+          wrapper.style.transform = "scale(1)";
+        }
+
+        const timer = setTimeout(closeToast, duration);
+        this._timers.set(id, timer);
+      } catch (e) {}
+    },
+  },
+
+  log(msg, ...args) {
+    console.log(`[BetterZenGradientPicker] ${msg}`, ...args);
+  },
+
+  error(msg, ...args) {
+    console.error(`[Zen Picker Mods] ERROR: ${msg}`, ...args);
+  },
+};
+
+/**
+ * OpacityModule - Unlocks 0-1 opacity range
+ */
+class OpacityModule {
+  static PATHS = {
+    LINE: "M 51.373 27.395 L 367.037 27.395",
+    SINE: "M 51.373 27.395 C 60.14 -8.503 68.906 -8.503 77.671 27.395 C 86.438 63.293 95.205 63.293 103.971 27.395 C 112.738 -8.503 121.504 -8.503 130.271 27.395 C 139.037 63.293 147.803 63.293 156.57 27.395 C 165.335 -8.503 174.101 -8.503 182.868 27.395 C 191.634 63.293 200.4 63.293 209.167 27.395 C 217.933 -8.503 226.7 -8.503 235.467 27.395 C 244.233 63.293 252.999 63.293 261.765 27.395 C 270.531 -8.503 279.297 -8.503 288.064 27.395 C 296.83 63.293 305.596 63.293 314.363 27.395 M 314.438 27.395 C 323.204 -8.503 331.97 -8.503 340.737 27.395 C 349.503 63.293 358.27 63.293 367.037 27.395",
+  };
+  static REFERENCE_Y = 27.395;
+
+  constructor() {
+    this.sinePoints = this._parseAndOptimizePath(OpacityModule.PATHS.SINE);
+    this.rafId = null;
+    this.lastOpacity = -1;
+    this.lastCSSState = null;
+    this.elements = {};
+  }
+
+  init(picker) {
+    this.refreshElements();
+    this.patchPicker(picker);
+    this.setupUI(picker);
+    this.scheduleVisualUpdate(picker.currentOpacity);
+  }
+
+  refreshElements() {
+    this.elements = {
+      slider: document.getElementById("PanelUI-zen-gradient-generator-opacity"),
+      path: document.querySelector(
+        "#PanelUI-zen-gradient-slider-wave svg path",
+      ),
+      stops: document.querySelectorAll(
+        "#PanelUI-zen-gradient-generator-slider-wave-gradient stop",
+      ),
+      root: document.documentElement,
+    };
+  }
+
+  setupUI(picker) {
+    const { slider } = this.elements;
+    if (slider) {
+      slider.min = "0";
+      slider.max = "1";
+      slider.step = "0.001";
+      slider.addEventListener("input", (e) =>
+        this.scheduleVisualUpdate(parseFloat(e.target.value)),
+      );
+      slider.value = picker.currentOpacity;
+    }
+  }
+
+  patchPicker(picker) {
+    const origOnWorkspaceChange = picker.onWorkspaceChange.bind(picker);
+    picker.blendWithWhiteOverlay = (c, o) =>
+      `rgba(${c[0]},${c[1]},${c[2]},${o})`;
+    picker.onWorkspaceChange = (ws, skip, theme) => {
+      origOnWorkspaceChange(ws, skip, theme);
+      this.refreshElements();
+      if (this.elements.slider) {
+        this.lastOpacity = picker.currentOpacity;
+        this.performVisualUpdate(this.lastOpacity);
+      }
+    };
+  }
+
+  scheduleVisualUpdate(opacity) {
+    if (Math.abs(opacity - this.lastOpacity) < 0.0001) return;
+    this.lastOpacity = opacity;
+    if (this.rafId) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.performVisualUpdate(this.lastOpacity);
+    });
+  }
+
+  performVisualUpdate(opacity) {
+    this.toggleTransparentCSS(opacity <= 0.001);
+    if (!this.elements.slider || !this.elements.slider.isConnected) {
+      this.refreshElements();
+      if (!this.elements.slider) return;
+    }
+
+    this.elements.slider.value = opacity;
+    this.elements.slider.style.setProperty(
+      "--zen-thumb-height",
+      `${40 + opacity * 15}px`,
+    );
+    this.elements.slider.style.setProperty(
+      "--zen-thumb-width",
+      `${10 + opacity * 15}px`,
+    );
+
+    if (this.elements.stops?.length >= 3) {
+      const pct = Math.min(opacity * 100 + 3, 100) + "%";
+      this.elements.stops[1].setAttribute("offset", pct);
+      this.elements.stops[2].setAttribute("offset", pct);
+    }
+
+    if (this.elements.path) {
+      if (opacity <= 0.001) {
+        this.elements.path.setAttribute("d", OpacityModule.PATHS.LINE);
+        this.elements.path.style.stroke =
+          this.elements.stops?.[2]?.getAttribute("stop-color") ||
+          "currentColor";
+      } else if (opacity >= 0.999) {
+        this.elements.path.setAttribute("d", OpacityModule.PATHS.SINE);
+        this.elements.path.style.stroke =
+          "url(#PanelUI-zen-gradient-generator-slider-wave-gradient)";
+      } else {
+        this.elements.path.setAttribute("d", this._interpolate(opacity));
+        this.elements.path.style.stroke =
+          "url(#PanelUI-zen-gradient-generator-slider-wave-gradient)";
+      }
+    }
+  }
+
+  toggleTransparentCSS(isTransparent) {
+    const root = this.elements.root || document.documentElement;
+    const BG = "--zen-main-browser-background";
+    const TB = "--zen-main-browser-background-toolbar";
+    const state = isTransparent ? "transparent" : "opaque";
+    if (this.lastCSSState === state) return;
+    this.lastCSSState = state;
+    if (isTransparent) {
+      if (root) {
+        root.style.setProperty(BG, "transparent", "important");
+        root.style.setProperty(TB, "transparent", "important");
+      }
+    } else if (root && root.style.getPropertyValue(BG) === "transparent") {
+      root.style.removeProperty(BG);
+      root.style.removeProperty(TB);
+    }
+  }
+
+  _parseAndOptimizePath(path) {
+    const points = [];
+    const cmds = path.match(/[MCL]\s*[\d\s.\-,]+/g) || [];
+    for (const cmd of cmds) {
+      const t = cmd[0],
+        n = cmd
+          .slice(1)
+          .trim()
+          .split(/[\s,]+/)
+          .map(Number);
+      if (t === "M")
+        points.push({ t, x: n[0], dy: n[1] - OpacityModule.REFERENCE_Y });
+      else if (t === "L") points.push({ t, x: n[0], y: n[1] });
+      else
+        for (let i = 0; i < n.length; i += 6)
+          points.push({
+            t: "C",
+            x1: n[i],
+            dy1: n[i + 1] - OpacityModule.REFERENCE_Y,
+            x2: n[i + 2],
+            dy2: n[i + 3] - OpacityModule.REFERENCE_Y,
+            x: n[i + 4],
+            dy: n[i + 5] - OpacityModule.REFERENCE_Y,
+          });
+    }
+    return points;
+  }
+
+  _interpolate(t) {
+    let d = "";
+    for (const p of this.sinePoints) {
+      if (p.t === "M") d += `M ${p.x} ${OpacityModule.REFERENCE_Y + p.dy * t} `;
+      else if (p.t === "C")
+        d += `C ${p.x1} ${OpacityModule.REFERENCE_Y + p.dy1 * t} ${p.x2} ${OpacityModule.REFERENCE_Y + p.dy2 * t} ${p.x} ${OpacityModule.REFERENCE_Y + p.dy * t} `;
+      else d += `L ${p.x} ${p.y} `;
+    }
+    return d.trim();
+  }
+}
+
+/**
+ * HarmonyModule - Unique Types for High-Count Harmonies
+ */
+class HarmonyModule {
+  init(picker) {
+    if (picker._harmonyModPatched) return;
+    picker.constructor.MAX_DOTS = 6;
+    this.injectCSS();
+    this.patchHarmonies(picker);
+    this.patchLogic(picker);
+    picker._harmonyModPatched = true;
+  }
+
+  injectCSS() {
+    let style = document.getElementById("zen-picker-mods-harmony-css");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "zen-picker-mods-harmony-css";
+      document.head.appendChild(style);
+    }
+    style.textContent = `
+            #PanelUI-zen-gradient-generator[zen-harmony-mode="floating"] .zen-theme-picker-dot:not(:first-of-type) {
+                pointer-events: all !important;
+                cursor: pointer !important;
+            }
+            #PanelUI-zen-gradient-generator[zen-harmony-mode="floating"] .zen-theme-picker-dot:not(:first-of-type):not([dragging="true"]):hover {
+                transform: scale(1.05) translate(-50%, -50%) !important;
+                z-index: 2000 !important;
+                box-shadow: 0 0 10px var(--zen-colors-text-primary), 0 0 4px rgba(0,0,0,0.1) !important;
+                transition: transform 0.2s !important;
+            }
+            @keyframes zen-dot-angular-wiggle {
+                0%, 100% { transform: translate(-50%, -50%) rotate(0deg); }
+                20% { transform: translate(-50%, -50%) rotate(8deg); }
+                40% { transform: translate(-50%, -50%) rotate(-6deg); }
+                60% { transform: translate(-50%, -50%) rotate(3deg); }
+                80% { transform: translate(-50%, -50%) rotate(-1.5deg); }
+            }
+            #PanelUI-zen-gradient-generator .zen-theme-picker-dot.zen-dot-shake {
+                transform-origin: calc(50% + var(--ox, 0px)) calc(50% + var(--oy, 0px)) !important;
+                animation: zen-dot-angular-wiggle 0.6s cubic-bezier(0.4, 0, 0.2, 1) both !important;
+                z-index: 2001 !important;
+            }
+
+        `;
+  }
+
+  patchHarmonies(picker) {
+    const harmonies = [
+      { type: "complementary", angles: [180] },
+      { type: "singleAnalogous", angles: [330] },
+      { type: "splitComplementary", angles: [150, 210] },
+      { type: "triadic", angles: [120, 240] },
+      { type: "analogous", angles: [30, 330] },
+      { type: "polygonal4", angles: [90, 180, 270] },
+      { type: "analogousLinear4", angles: [30, 330, 0] },
+      { type: "floating", angles: [0, 0, 0] },
+
+      { type: "polygonal5", angles: [72, 144, 216, 288] },
+      { type: "analogous5", angles: [30, 60, 300, 330] },
+      { type: "hybridAnalogous5", angles: [30, 330, 20, 340] },
+      { type: "floating", angles: [0, 0, 0, 0] },
+
+      { type: "polygonal6", angles: [60, 120, 180, 240, 300] },
+      { type: "doubleAnalogous6", angles: [30, 330, 20, 340, 0] },
+      { type: "floating", angles: [0, 0, 0, 0, 0] },
+
+      { type: "linear", angles: [0] },
+      { type: "linear", angles: [0, 0] },
+      { type: "floating", angles: [] },
+      { type: "floating", angles: [0] },
+      { type: "floating", angles: [0, 0] },
+    ];
+
+    Object.defineProperty(picker, "colorHarmonies", {
+      get: () => harmonies,
+      configurable: true,
+    });
+  }
+
+  patchLogic(picker) {
+    const origCalculate = picker.calculateCompliments.bind(picker);
+    const origHandle = picker.handleColorPositions.bind(picker);
+
+    // 1. Cleanup Orphans - Fixes "Dead Dots" by ensuring state and UI never diverge
+    picker.handleColorPositions = function (
+      colorPositions,
+      ignoreLegacy = false,
+    ) {
+      const targetIDs = new Set(colorPositions.map((p) => p.ID));
+
+      // Immediately purge any dots that the harmony calculation decided should not exist
+      this.dots = this.dots.filter((dot) => {
+        if (!targetIDs.has(dot.ID)) {
+          dot.element?.remove();
+          return false;
+        }
+        return true;
+      });
+
+      // Call original handle logic for movement/color updates
+      return origHandle(colorPositions, ignoreLegacy);
+    };
+
+    // 2. Count-Aware Calculation - Fixes "Mode Jumping" and "5-dot jump"
+    picker.calculateCompliments = function (
+      dots,
+      action = "update",
+      useHarmony = "",
+    ) {
+      const currentAlgo = useHarmony || this.useAlgo || "";
+      const harmonies = this.colorHarmonies;
+
+      // Robust Count Logic: dots.length is already reduced for "remove" in native calls
+      const totalTargetDots = dots.length + (action === "add" ? 1 : 0);
+      const targetAnglesCount = Math.max(0, totalTargetDots - 1);
+
+      // Direct Default Lookup during Transitions (Zen Default Behavior)
+      if (action === "add" || action === "remove") {
+        const nextHarmony = harmonies.find(
+          (h) => h.angles.length === targetAnglesCount,
+        );
+
+        if (
+          nextHarmony &&
+          (nextHarmony.type === "floating" || nextHarmony.type === "linear")
+        ) {
+          this.useAlgo = nextHarmony.type;
+          const rect = this.panel
+            .querySelector(".zen-theme-picker-gradient")
+            .getBoundingClientRect();
+          const center = { x: rect.width / 2, y: rect.height / 2 };
+          const primary = dots.find((d) => d.ID === 0) || dots[0];
+
+          let updatedDots = [...dots];
+          if (action === "add") {
+            updatedDots.push({
+              ID: dots.length,
+              position: center,
+              type: primary?.type || "explicit-lightness",
+            });
+          }
+          return updatedDots;
+        }
+
+        // For standard harmonies, let the original logic handle the default snap by passing ""
+        return origCalculate(dots, action, "");
+      }
+
+      const activeAlgo = useHarmony || this.useAlgo || "";
+      const isFloating = activeAlgo === "floating";
+      const isLinear = activeAlgo === "linear";
+      const isHybrid4 = activeAlgo === "analogousLinear4";
+      const isHybrid5 = activeAlgo === "hybridAnalogous5";
+      const isHybrid6 = activeAlgo === "doubleAnalogous6";
+
+      if (isFloating) {
+        this.panel.setAttribute("zen-harmony-mode", "floating");
+        this.useAlgo = "floating";
+        if (
+          (action === "harmony" ||
+            (action === "update" &&
+              useHarmony === "floating" &&
+              !this._floatingActive)) &&
+          !this.dragging
+        ) {
+          this._floatingActive = true;
+          setTimeout(() => {
+            const rect = this.panel
+              .querySelector(".zen-theme-picker-gradient")
+              .getBoundingClientRect();
+            const cx = rect.width / 2,
+              cy = rect.height / 2;
+            dots.forEach((dot) => {
+              const el = dot.element;
+              if (el) {
+                const ox = cx - dot.position.x,
+                  oy = cy - dot.position.y;
+                el.style.setProperty("--ox", ox + "px");
+                el.style.setProperty("--oy", oy + "px");
+                el.classList.remove("zen-dot-shake");
+                void el.offsetWidth;
+                el.classList.add("zen-dot-shake");
+                setTimeout(() => el.classList.remove("zen-dot-shake"), 650);
+              }
+            });
+          }, 50);
+        }
+        return dots;
+      }
+      this._floatingActive = false;
+      this.panel.removeAttribute("zen-harmony-mode");
+
+      if (isHybrid4 || isHybrid5 || isHybrid6) {
+        this.useAlgo = activeAlgo;
+        const rect = this.panel
+          .querySelector(".zen-theme-picker-gradient")
+          .getBoundingClientRect();
+        const center = { x: rect.width / 2, y: rect.height / 2 },
+          maxRadius = rect.width / 2;
+        const primary = dots.find((d) => d.ID === 0) || dots[0];
+        const dx = primary.position.x - center.x,
+          dy = primary.position.y - center.y;
+        const baseAngle = Math.atan2(dy, dx),
+          primaryRadius = Math.sqrt(dx * dx + dy * dy);
+        const factor =
+          primaryRadius < maxRadius * 0.3
+            ? 1
+            : primaryRadius > maxRadius * 0.5
+              ? 0
+              : 1 - (primaryRadius - maxRadius * 0.3) / (maxRadius * 0.2);
+        const secondaryRadius =
+          (primaryRadius / 2) * (1 - factor) +
+          (primaryRadius + (maxRadius - primaryRadius) / 2) * factor;
+        const secondary = dots
+          .filter((d) => d.ID !== 0)
+          .sort((a, b) => a.ID - b.ID);
+
+        const hybridConfigs = {
+          analogousLinear4: {
+            angles: [30, -30, 0],
+            radii: [primaryRadius, primaryRadius, secondaryRadius],
+            min: 4,
+          },
+          hybridAnalogous5: {
+            angles: [30, -30, 20, -20],
+            radii: [
+              primaryRadius,
+              primaryRadius,
+              secondaryRadius,
+              secondaryRadius,
+            ],
+            min: 5,
+          },
+          doubleAnalogous6: {
+            angles: [30, -30, 20, -20, 0],
+            radii: [
+              primaryRadius,
+              primaryRadius,
+              secondaryRadius,
+              secondaryRadius,
+              secondaryRadius,
+            ],
+            min: 6,
+          },
+        };
+
+        const config = hybridConfigs[activeAlgo];
+        if (config && dots.length >= config.min) {
+          return dots.map((dot) => {
+            if (dot.ID === 0) return dot;
+            const idx = secondary.indexOf(dot);
+            if (idx < 0 || idx >= config.angles.length) return dot;
+            const angle = baseAngle + (config.angles[idx] * Math.PI) / 180,
+              r = config.radii[idx];
+            return {
+              ...dot,
+              position: {
+                x: center.x + r * Math.cos(angle),
+                y: center.y + r * Math.sin(angle),
+              },
+            };
+          });
+        }
+      }
+
+      if (isLinear && dots.length >= 2 && dots.length <= 6) {
+        this.useAlgo = "linear";
+        const rect = this.panel
+          .querySelector(".zen-theme-picker-gradient")
+          .getBoundingClientRect();
+        const center = { x: rect.width / 2, y: rect.height / 2 },
+          maxRadius = rect.width / 2;
+        const primary = dots.find((d) => d.ID === 0) || dots[0];
+        const dx = primary.position.x - center.x,
+          dy = primary.position.y - center.y;
+        const primaryAngle = Math.atan2(dy, dx),
+          primaryRadius = Math.sqrt(dx * dx + dy * dy);
+        const factor =
+          primaryRadius < maxRadius * 0.3
+            ? 1
+            : primaryRadius > maxRadius * 0.5
+              ? 0
+              : 1 - (primaryRadius - maxRadius * 0.3) / (maxRadius * 0.2);
+        const secondary = dots
+          .filter((d) => d.ID !== 0)
+          .sort((a, b) => a.ID - b.ID);
+        const count = secondary.length;
+
+        return dots.map((dot) => {
+          if (dot.ID === 0) return dot;
+          const index = secondary.indexOf(dot);
+          if (index < 0) return dot;
+          const targetRadius =
+            (primaryRadius / (count + 1)) * (index + 1) * (1 - factor) +
+            (primaryRadius +
+              ((maxRadius - primaryRadius) / (count + 1)) * (index + 1)) *
+              factor;
+          return {
+            ...dot,
+            position: {
+              x: center.x + targetRadius * Math.cos(primaryAngle),
+              y: center.y + targetRadius * Math.sin(primaryAngle),
+            },
+          };
+        });
+      }
+
+      if (action === "remove" && dots.length >= 3) {
+        const result = origCalculate(dots, action, activeAlgo);
+        return result.slice(0, dots.length);
+      }
+
+      return origCalculate(dots, action, activeAlgo);
+    };
+  }
+}
+
+/**
+ * RotationModule - Custom Gradient Rotation Control
+ * Forced isolation per workspace via about:config
+ */
+class RotationModule {
+  static DEFAULT_ROTATION = -45;
+
+  constructor() {
+    this.currentRotation = RotationModule.DEFAULT_ROTATION;
+    this.dialWrapper = null;
+    this.dialHandler = null;
+    this.dialLabel = null;
+    this.dialRing = null;
+    this.dialArc = null;
+    this.picker = null;
+    this._isDragging = false;
+    this._boundMouseMove = null;
+    this._boundMouseUp = null;
+    this._ignoreNextThemeUpdate = false;
+    this._hadRecentDrag = false;
+  }
+
+  get displayAngle() {
+    let offset = this.currentRotation - RotationModule.DEFAULT_ROTATION;
+    offset = ((offset % 360) + 360) % 360;
+    return Math.round(offset);
+  }
+
+  init(picker) {
+    if (picker._rotationModPatched) return;
+    this.picker = picker;
+    picker._rotationModule = this;
+
+    this.injectCSS();
+    this.injectDial();
+    this.patchGradient(picker);
+    this.patchWorkspaceChange(picker);
+    this.patchInitThemePicker(picker);
+    this.patchPanelOpen(picker);
+    picker._rotationModPatched = true;
+
+    // Apply saved rotation to the initial workspace on startup
+    setTimeout(() => {
+      if (this.dialWrapper) {
+        this.restoreRotation();
+        this._ignoreNextThemeUpdate = true;
+        try {
+          if (this.picker.updateCurrentWorkspace)
+            this.picker.updateCurrentWorkspace();
+        } finally {
+          this._ignoreNextThemeUpdate = false;
+        }
+      }
+    }, 150);
+  }
+
+  injectCSS() {
+    let style = document.getElementById("zen-picker-mods-rotation-css");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "zen-picker-mods-rotation-css";
+      document.head.appendChild(style);
+    }
+    style.textContent = `
+            #zen-rotation-dial-wrapper { width: 5rem; height: 5rem; position: relative; overflow: visible; display: flex !important; align-items: center; justify-content: center; border-radius: 50%; }
+            @media (-moz-platform: macos) { #zen-rotation-dial-wrapper { width: 6rem; height: 6rem; } }
+            #zen-rotation-dial-wrapper::after { content: ""; position: absolute; width: 60%; height: 60%; border: 1px solid color-mix(in srgb, var(--zen-colors-border) 50%, transparent 50%); border-radius: 50%; background: linear-gradient(-45deg, transparent -10%, light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1)) 110%); z-index: 2; top: 50%; left: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+            #zen-rotation-dial-wrapper:not([disabled]):hover::after { pointer-events: all; cursor: pointer; }
+            
+            #zen-rotation-dial-ring { position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; z-index: 1; overflow: visible !important; }
+            #zen-rotation-dial-arc { position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; z-index: 2; overflow: visible !important; transform: rotate(-90deg); transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+            
+            #zen-rotation-dial-label { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 11px; font-weight: 600; color: light-dark(rgba(0,0,0,0.6), rgba(255,255,255,0.7)); z-index: 3; pointer-events: none; user-select: none; transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1); display: flex; align-items: center; justify-content: center; }
+            #zen-rotation-dial-label span { opacity: 0.6; transition: opacity 0.15s ease-out; }
+            #zen-rotation-dial-label::after { content: ""; position: absolute; width: 14px; height: 14px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 2v6h-6'%3E%3C/path%3E%3Cpath d='M3 12a9 9 0 0 1 15-6.7L21 8'%3E%3C/path%3E%3Cpath d='M3 22v-6h6'%3E%3C/path%3E%3Cpath d='M21 12a9 9 0 0 1-15 6.7L3 16'%3E%3C/path%3E%3C/svg%3E") no-repeat center; mask-size: contain; opacity: 0; transform: translate(0, -1px); transition: opacity 0.2s ease-out; }
+            #zen-rotation-dial-wrapper.knob-hover #zen-rotation-dial-label span { opacity: 0; }
+            #zen-rotation-dial-wrapper.knob-hover #zen-rotation-dial-label::after { opacity: 0.6; }
+
+            #zen-rotation-dial-handler-container { position: absolute; width: 100%; height: 100%; top: 0; left: 0; pointer-events: none; z-index: 10 !important; }
+            #zen-rotation-dial-handler-container.zen-programmatic-change { transition: transform 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+            #zen-rotation-dial-handler { width: 6px; height: 12px; background: light-dark(#757575, #d1d1d1); position: absolute; top: 0; left: 50%; transform: translate(-50%, -50%); border-radius: 2px; cursor: pointer; pointer-events: all !important; transition: height 0.1s; }
+            #zen-rotation-dial-wrapper[disabled] { opacity: 0.4; pointer-events: none !important; }
+            #zen-rotation-dial-wrapper[disabled] #zen-rotation-dial-handler { pointer-events: none !important; cursor: default; }
+            #zen-rotation-dial-handler:hover { height: 14px; }
+
+            /* Texture Wrapper Reset */
+            #PanelUI-zen-gradient-generator-texture-wrapper { position: relative; cursor: default; }
+            #PanelUI-zen-gradient-generator-texture-wrapper.knob-hover { cursor: pointer; }
+            #zen-grain-reset-label { 
+                position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); 
+                font-size: 10px; font-weight: 600; color: light-dark(rgba(0,0,0,0.6), rgba(255,255,255,0.7)); 
+                z-index: 5; pointer-events: none; user-select: none; opacity: 1; transition: opacity 0.2s;
+                width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;
+            }
+            #zen-grain-reset-label::after { 
+                content: ""; position: absolute; width: 14px; height: 14px; 
+                background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 2v6h-6'%3E%3C/path%3E%3Cpath d='M3 12a9 9 0 0 1 15-6.7L21 8'%3E%3C/path%3E%3Cpath d='M3 22v-6h6'%3E%3C/path%3E%3Cpath d='M21 12a9 9 0 0 1-15 6.7L3 16'%3E%3C/path%3E%3C/svg%3E") no-repeat center; 
+                mask-size: contain; opacity: 0; transition: opacity 0.2s;
+            }
+            #PanelUI-zen-gradient-generator-texture-wrapper.knob-hover #zen-grain-reset-label::after { opacity: 0.6; }
+            #zen-grain-reset-label span { display: none !important; }
+        `;
+  }
+
+  injectDial() {
+    const textureWrapper = document.getElementById(
+      "PanelUI-zen-gradient-generator-texture-wrapper",
+    );
+    if (!textureWrapper) return;
+
+    const wrapper = document.createElement("div");
+    wrapper.id = "zen-rotation-dial-wrapper";
+
+    const ring = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    ring.id = "zen-rotation-dial-ring";
+    ring.setAttribute("viewBox", "0 0 100 100");
+    ring.innerHTML = `<circle cx="50" cy="50" r="50" fill="none" stroke="light-dark(rgba(0, 0, 0, 0.3), rgba(255, 255, 255, 0.3))" stroke-width="4" stroke-linecap="round" opacity="0.4" />`;
+    wrapper.appendChild(ring);
+    this.dialRing = ring;
+
+    const arc = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    arc.id = "zen-rotation-dial-arc";
+    arc.setAttribute("viewBox", "0 0 100 100");
+    arc.innerHTML = `<circle cx="50" cy="50" r="50" fill="none" stroke="var(--zen-colors-text-primary, white)" stroke-width="4" stroke-linecap="round" stroke-dasharray="0 315" opacity="0.25" />`;
+    wrapper.appendChild(arc);
+    this.dialArc = arc;
+
+    const label = document.createElement("div");
+    label.id = "zen-rotation-dial-label";
+    const labelText = document.createElement("span");
+    labelText.textContent = "0°";
+    label.appendChild(labelText);
+    wrapper.appendChild(label);
+    this.dialLabel = label;
+    this._dialLabelSpan = labelText;
+
+    const container = document.createElement("div");
+    container.id = "zen-rotation-dial-handler-container";
+    const handler = document.createElement("div");
+    handler.id = "zen-rotation-dial-handler";
+    container.appendChild(handler);
+    wrapper.appendChild(container);
+    this.dialHandler = container;
+    this._dialHandleEl = handler;
+
+    // Create or get secondary row for our custom controls
+    let secondaryRow = document.getElementById("zen-picker-secondary-row");
+    if (!secondaryRow) {
+      const nativeRow = document.getElementById(
+        "PanelUI-zen-gradient-colors-wrapper",
+      );
+      if (!nativeRow) return;
+
+      secondaryRow = document.createElement("hbox");
+      secondaryRow.id = "zen-picker-secondary-row";
+      nativeRow.parentNode.insertBefore(secondaryRow, nativeRow.nextSibling);
+    }
+
+    // Create wrapper for rotation dial (right side of secondary row)
+    const rotationWrapper = document.createElement("vbox");
+    rotationWrapper.id = "zen-picker-rotation-wrapper";
+    // User requested 20px left shift
+    rotationWrapper.style.marginRight = "20px";
+    rotationWrapper.appendChild(wrapper);
+
+    secondaryRow.appendChild(rotationWrapper);
+    this.dialWrapper = wrapper;
+
+    this._boundMouseMove = this.onDialMouseMove.bind(this);
+    this._boundMouseUp = this.onDialMouseUp.bind(this);
+    this._dialHandleEl.addEventListener(
+      "mousedown",
+      this.onDialMouseDown.bind(this),
+    );
+
+    wrapper.addEventListener("click", (e) => {
+      if (this._hadRecentDrag) {
+        this._hadRecentDrag = false;
+        return;
+      }
+      if (
+        e.target.id === "zen-rotation-dial-wrapper" ||
+        e.target.closest("#zen-rotation-dial-wrapper")
+      ) {
+        const rect = wrapper.getBoundingClientRect();
+        const dx = e.clientX - (rect.left + rect.width / 2);
+        const dy = e.clientY - (rect.top + rect.height / 2);
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < rect.width * 0.32 && !wrapper.hasAttribute("disabled")) {
+          if (this.currentRotation !== RotationModule.DEFAULT_ROTATION) {
+            if (this.dialHandler) {
+              this.dialHandler.classList.add("zen-programmatic-change");
+              setTimeout(
+                () =>
+                  this.dialHandler?.classList.remove("zen-programmatic-change"),
+                500,
+              );
+            }
+            this.currentRotation = RotationModule.DEFAULT_ROTATION;
+            this.updateUI();
+            this.applyRotation();
+          }
+        }
+      }
+    });
+
+    // Knob hover detection for reload icon
+    wrapper.addEventListener("mousemove", (e) => {
+      if (wrapper.hasAttribute("disabled") || this._isDragging) return;
+
+      const rect = wrapper.getBoundingClientRect();
+      const dx = e.clientX - (rect.left + rect.width / 2);
+      const dy = e.clientY - (rect.top + rect.height / 2);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < rect.width * 0.32) wrapper.classList.add("knob-hover");
+      else wrapper.classList.remove("knob-hover");
+    });
+    wrapper.addEventListener("mouseleave", () =>
+      wrapper.classList.remove("knob-hover"),
+    );
+
+    setTimeout(() => this.updateUI(), 0);
+  }
+
+  updateUI() {
+    const dots = this.picker?.dots || [];
+    const dotCount = dots.length;
+    const isDisabled = dotCount <= 1;
+
+    if (this.dialWrapper) {
+      if (isDisabled) this.dialWrapper.setAttribute("disabled", "true");
+      else this.dialWrapper.removeAttribute("disabled");
+    }
+
+    if (!this.dialLabel) return;
+
+    const opacity = isDisabled ? "0" : "1";
+    this.dialLabel.style.opacity = opacity;
+    if (this.dialArc) this.dialArc.style.opacity = opacity;
+
+    if (this.dialHandler) {
+      const angle = isDisabled ? 0 : this.displayAngle;
+      this.dialHandler.style.transform = `rotate(${angle}deg)`;
+    }
+
+    if (!isDisabled && this._dialLabelSpan) {
+      this._dialLabelSpan.textContent = `${this.displayAngle}°`;
+    }
+
+    if (this.dialArc) {
+      const circle = this.dialArc.querySelector("circle");
+      if (isDisabled) circle.setAttribute("opacity", "0");
+      else {
+        circle.setAttribute("opacity", "0.25");
+        circle.style.transition = "";
+        if (this.dialHandler?.classList.contains("zen-programmatic-change")) {
+          circle.style.transition =
+            "stroke-dasharray 0.4s cubic-bezier(0.4, 0, 0.2, 1)";
+        }
+        const circumference = 314.159;
+        const arcLength = (this.displayAngle / 360) * circumference;
+        circle.setAttribute(
+          "stroke-dasharray",
+          `${arcLength} ${circumference}`,
+        );
+      }
+    }
+  }
+
+  onDialMouseDown(event) {
+    if (this.dialWrapper?.hasAttribute("disabled")) return;
+    this._isDragging = true;
+    this._hadRecentDrag = false;
+    if (this.dialHandler) this.dialHandler.classList.add("dragging");
+    document.addEventListener("mousemove", this._boundMouseMove);
+    document.addEventListener("mouseup", this._boundMouseUp);
+  }
+
+  onDialMouseMove(event) {
+    if (!this._isDragging || !this.dialWrapper) return;
+    this._hadRecentDrag = true;
+    const rect = this.dialWrapper.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2,
+      centerY = rect.top + rect.height / 2;
+    let mouseAngle =
+      (Math.atan2(event.clientY - centerY, event.clientX - centerX) * 180) /
+        Math.PI +
+      90;
+    mouseAngle = ((Math.round(mouseAngle) % 360) + 360) % 360;
+    const newRotation = mouseAngle + RotationModule.DEFAULT_ROTATION;
+    let norm = newRotation;
+    while (norm > 180) norm -= 360;
+    while (norm <= -180) norm += 360;
+
+    if (this.currentRotation !== norm) {
+      this.currentRotation = norm;
+      this.updateUI();
+      this._ignoreNextThemeUpdate = true;
+      try {
+        // BUG FIX: passing true here suppresses the "deep refresh" (preference change logic)
+        // which was causing the infinite dot flickering during rotation.
+        this.picker.updateCurrentWorkspace(true);
+      } finally {
+        this._ignoreNextThemeUpdate = false;
+      }
+    }
+  }
+
+  onDialMouseUp(event) {
+    if (!this._isDragging) return;
+    this._isDragging = false;
+    if (this.dialHandler) this.dialHandler.classList.remove("dragging");
+    document.removeEventListener("mousemove", this._boundMouseMove);
+    document.removeEventListener("mouseup", this._boundMouseUp);
+    this.applyRotation();
+    setTimeout(() => {
+      this._hadRecentDrag = false;
+    }, 200);
+  }
+
+  get activeWorkspace() {
+    if (this.picker?._currentWorkspace) return this.picker._currentWorkspace;
+    if (window.gZenWorkspaces?.getActiveWorkspace)
+      return window.gZenWorkspaces.getActiveWorkspace();
+    return null;
+  }
+
+  applyRotation() {
+    if (!this.picker) return;
+    const ws = this.activeWorkspace;
+    const uuid = ws?.uuid || ws?.id;
+    if (uuid) {
+      ZenPickerMods.Storage.setRotation(uuid, this.currentRotation);
+      if (ws.theme) ws.theme.rotation = this.currentRotation;
+    }
+    this._ignoreNextThemeUpdate = true;
+    try {
+      // Only update visuals, don't trigger full refresh
+      if (this.picker.updateCurrentWorkspace)
+        this.picker.updateCurrentWorkspace(false);
+    } finally {
+      this._ignoreNextThemeUpdate = false;
+    }
+  }
+
+  restoreRotation(ws) {
+    if (this._isDragging) return;
+    if (this.dialHandler) {
+      this.dialHandler.classList.add("zen-programmatic-change");
+      setTimeout(
+        () => this.dialHandler?.classList.remove("zen-programmatic-change"),
+        500,
+      );
+    }
+    const target = ws || this.activeWorkspace;
+    const uuid = target?.uuid || target?.id;
+    if (!uuid) return;
+    const stored = ZenPickerMods.Storage.getRotation(uuid);
+    if (stored !== undefined && !isNaN(stored)) {
+      this.currentRotation = stored;
+      if (target.theme) target.theme.rotation = stored;
+    } else {
+      this.currentRotation = RotationModule.DEFAULT_ROTATION;
+      if (target.theme) target.theme.rotation = RotationModule.DEFAULT_ROTATION;
+    }
+    this.updateUI();
+  }
+
+  patchPanelOpen(picker) {
+    const panel = document.getElementById("PanelUI-zen-gradient-generator");
+    if (panel) {
+      panel.addEventListener("popupshowing", () => this.restoreRotation());
+      panel.addEventListener("popupshown", () => {
+        this._ignoreNextThemeUpdate = true;
+        const ws = this.activeWorkspace;
+        if (ws?.theme) ws.theme.rotation = this.currentRotation;
+        // Avoid full updateCurrentWorkspace call which triggers redundant refreshes
+        this._ignoreNextThemeUpdate = false;
+      });
+    }
+  }
+
+  patchInitThemePicker(picker) {
+    const self = this;
+    const orig = picker.initThemePicker?.bind(picker);
+    if (orig) {
+      picker.initThemePicker = function (...args) {
+        self.restoreRotation();
+        const res = orig(...args);
+        self.updateUI();
+        return res;
+      };
+    }
+  }
+
+  patchWorkspaceChange(picker) {
+    const self = this;
+    const origOnWorkspace = picker.onWorkspaceChange.bind(picker);
+    picker.onWorkspaceChange = function (ws, skip, theme) {
+      if (!self._ignoreNextThemeUpdate) self.restoreRotation(ws);
+
+      origOnWorkspace(ws, skip, theme);
+      self.updateUI();
+    };
+
+    const origUpdate = picker.updateCurrentWorkspace.bind(picker);
+    picker.updateCurrentWorkspace = function (...args) {
+      const ws = self.activeWorkspace;
+      if (ws?.theme) ws.theme.rotation = self.currentRotation;
+      const res = origUpdate.apply(this, args);
+      if (!self._ignoreNextThemeUpdate && ws) {
+        const uuid = ws.uuid || ws.id;
+        if (uuid) ZenPickerMods.Storage.setRotation(uuid, self.currentRotation);
+      }
+      return res;
+    };
+  }
+
+  patchGradient(picker) {
+    const self = this;
+    const orig = picker.getGradient.bind(picker);
+
+    picker.getGradient = function (colors, forToolbar = false) {
+      // 1. Force native state restoration (lightness/algorithm) by calling original function
+      const nativeResult = orig(colors, forToolbar);
+
+      const themedColors = this.themedColors(colors);
+      // 2. Synchronize algorithm state
+      const themeAlgo =
+        themedColors.length > 1 ? (themedColors[0]?.algorithm ?? "") : "";
+      if (themeAlgo) {
+        this.useAlgo = themeAlgo;
+        // BUG FIX: Sync zen-harmony-mode attribute so floating dots get pointer-events
+        if (themeAlgo === "floating") {
+          this.panel.setAttribute("zen-harmony-mode", "floating");
+          this._floatingActive = true;
+        }
+      }
+
+      const uuid = this._currentWorkspace?.uuid;
+      let rotation = self.currentRotation;
+      const stored = ZenPickerMods.Storage.getRotation(uuid);
+      if (stored !== undefined) rotation = stored;
+
+      // 3. If only 1 dot, native result is sufficient
+      if (themedColors.length <= 1) return nativeResult;
+
+      const displayDelta = self.displayAngle;
+      const getCol = (c) => this.getSingleRGBColor(c, forToolbar);
+      const cols = themedColors.map(getCol);
+
+      if (themedColors.find((c) => c.isCustom)) {
+        const stops = cols
+          .map((c, i) => `${c} ${(i / (cols.length - 1)) * 100}%`)
+          .join(", ");
+        return `linear-gradient(${RotationModule.DEFAULT_ROTATION + displayDelta}deg, ${stops})`;
+      }
+
+      const rad = (displayDelta * Math.PI) / 180,
+        cos = Math.cos(rad),
+        sin = Math.sin(rad);
+      const rot = (x, y) => {
+        const nx = cos * (x - 50) - sin * (y - 50) + 50;
+        const ny = sin * (x - 50) + cos * (y - 50) + 50;
+        return `${Math.round(nx)}% ${Math.round(ny)}%`;
+      };
+
+      // 2 Dots
+      if (cols.length === 2) {
+        const angle = -45 + displayDelta;
+        if (!forToolbar)
+          return [
+            `linear-gradient(${angle}deg, ${cols[1]} 0%, transparent 100%)`,
+            `linear-gradient(${angle + 180}deg, ${cols[0]} 0%, transparent 100%)`,
+          ]
+            .reverse()
+            .join(", ");
+        return `linear-gradient(${angle}deg, ${cols[1]} 0%, ${cols[0]} 100%)`;
+      }
+
+      // 3 Dots (Pure Native)
+      const baseAngle = -5 + displayDelta;
+      if (cols.length === 3) {
+        return [
+          `linear-gradient(${baseAngle}deg, ${cols[2]} 10%, transparent 80%)`,
+          `radial-gradient(circle at ${rot(95, 0)}, ${cols[1]} 0%, transparent 75%)`,
+          `radial-gradient(circle at ${rot(0, 0)}, ${cols[0]} 10%, transparent 70%)`,
+        ].join(", ");
+      }
+
+      // 4+ Dots Special Polish
+      const layers = [];
+      const r60 = "60%";
+
+      // 1. TOP LAYERS: Radial glows that must be distinct (Bottom segments)
+      if (cols.length === 4) {
+        layers.push(
+          `radial-gradient(circle at ${rot(0, 100)}, ${cols[2]} 0%, transparent ${r60})`,
+        ); // BL (Dot 3)
+      } else if (cols.length === 5) {
+        layers.push(
+          `radial-gradient(circle at ${rot(0, 100)}, ${cols[2]} 0%, transparent ${r60})`,
+        ); // BL (Dot 3)
+        layers.push(
+          `radial-gradient(circle at ${rot(100, 100)}, ${cols[3]} 0%, transparent ${r60})`,
+        ); // BR (Dot 4)
+      } else if (cols.length === 6) {
+        layers.push(
+          `radial-gradient(circle at ${rot(0, 100)}, ${cols[2]} 0%, transparent ${r60})`,
+        ); // BL (Dot 3)
+        layers.push(
+          `radial-gradient(circle at ${rot(100, 100)}, ${cols[4]} 0%, transparent ${r60})`,
+        ); // BR (Dot 5)
+        layers.push(
+          `radial-gradient(circle at ${rot(50, 100)}, ${cols[3]} 0%, transparent 65%)`,
+        ); // BC (Dot 4)
+      }
+
+      // 2. MIDDLE LAYER: The Linear Background wash
+      layers.push(
+        `linear-gradient(${baseAngle}deg, ${cols[cols.length - 1]} 10%, transparent 80%)`,
+      );
+
+      // 3. UNDER LAYERS: Primary top glows (shine through linear transparency)
+      layers.push(
+        `radial-gradient(circle at ${rot(95, 0)}, ${cols[1]} 0%, transparent ${r60})`,
+      ); // TR (Dot 2)
+      layers.push(
+        `radial-gradient(circle at ${rot(0, 0)}, ${cols[0]} 10%, transparent ${r60})`,
+      ); // TL (Dot 1)
+
+      return layers.join(", ");
+    };
+  }
+}
+
+/**
+ * PaletteModule - Cycles between 5 palette behaviors
+ */
+class PaletteModule {
+  static MODES = [
+    { id: "full", label: "Full", type: undefined },
+    {
+      id: "pastel",
+      label: "Pastel",
+      type: "explicit-lightness",
+      lightness: 85,
+    },
+    {
+      id: "vibrant",
+      label: "Vibrant",
+      type: "explicit-lightness",
+      lightness: 50,
+    },
+    { id: "dark", label: "Dark", type: "explicit-lightness", lightness: 25 },
+    {
+      id: "deep-dark",
+      label: "Deep Dark",
+      type: "explicit-lightness",
+      lightness: 15,
+    },
+    { id: "bw", label: "B&W", type: "explicit-black-white" },
+  ];
+
+  constructor() {
+    this._isAnimating = false;
+  }
+
+  init(picker) {
+    if (picker._paletteModPatched) return;
+    this.picker = picker;
+    this._selectedMode = null; // Forces mode when set
+    this.injectUI();
+    this.injectSlider();
+    this.patchPicker(picker);
+    picker._paletteMod = this;
+    picker._paletteModPatched = true;
+  }
+
+  injectUI() {
+    const actions = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-actions",
+    );
+    const gradientPanel = this.picker?.panel?.querySelector(
+      ".zen-theme-picker-gradient",
+    );
+    if (!actions || !gradientPanel) return;
+
+    if (!document.getElementById("zen-picker-palette-cycle")) {
+      const btn = document.createElement("button");
+      btn.id = "zen-picker-palette-cycle";
+      btn.className = "subviewbutton";
+
+      btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" style="transform: translate(-1px, -1px);">
+ <path d="M2 12C2 17.5228 6.47715 22 12 22C13.6569 22 15 20.6569 15 19V18.5C15 18.0356 15 17.8034 15.0257 17.6084C15.2029 16.2622 16.2622 15.2029 17.6084 15.0257C17.8034 15 18.0356 15 18.5 15H19C20.6569 15 22 13.6569 22 12C22 6.47715 17.5228 2 12 2C6.47715 2 2 6.47715 2 12Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+ <path d="M7 13C7.55228 13 8 12.5523 8 12C8 11.4477 7.55228 11 7 11C6.44772 11 6 11.4477 6 12C6 12.5523 6.44772 13 7 13Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+ <path d="M16 9C16.5523 9 17 8.55228 17 8C17 7.44772 16.5523 7 16 7C15.4477 7 15 7.44772 15 8C15 8.55228 15.4477 9 16 9Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+ <path d="M10 8C10.5523 8 11 7.55228 11 7C11 6.44772 10.5523 6 10 6C9.44772 6 9 6.44772 9 7C9 7.55228 9.44772 8 10 8Z" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+ </svg>`;
+      ["mousedown", "click", "mouseup", "command"].forEach((type) => {
+        btn.addEventListener(
+          type,
+          (e) => {
+            e.stopPropagation();
+            if (type === "click" || type === "command") {
+              e.preventDefault();
+              if (!btn.disabled) this.cyclePalette();
+            }
+          },
+          true,
+        );
+      });
+
+      const heart = document.getElementById("zen-picker-favorite-save");
+      if (heart) actions.insertBefore(btn, heart);
+      else actions.appendChild(btn);
+    }
+
+    if (!document.getElementById("zen-picker-randomize")) {
+      const randomBtn = document.createElement("button");
+      randomBtn.id = "zen-picker-randomize";
+      randomBtn.className = "subviewbutton";
+      randomBtn.setAttribute("tooltiptext", "Randomize gradient");
+      randomBtn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+ <path d="M13.0001 14L10.0001 11M15.0104 3.5V2M18.9498 5.06066L20.0104 4M18.9498 13L20.0104 14.0607M11.0104 5.06066L9.94979 4M20.5104 9H22.0104M6.13146 20.8686L15.3687 11.6314C15.7647 11.2354 15.9627 11.0373 16.0369 10.809C16.1022 10.6082 16.1022 10.3918 16.0369 10.191C15.9627 9.96265 15.7647 9.76465 15.3687 9.36863L14.6315 8.63137C14.2354 8.23535 14.0374 8.03735 13.8091 7.96316C13.6083 7.8979 13.3919 7.8979 13.1911 7.96316C12.9627 8.03735 12.7647 8.23535 12.3687 8.63137L3.13146 17.8686C2.73545 18.2646 2.53744 18.4627 2.46325 18.691C2.39799 18.8918 2.39799 19.1082 2.46325 19.309C2.53744 19.5373 2.73545 19.7354 3.13146 20.1314L3.86872 20.8686C4.26474 21.2646 4.46275 21.4627 4.69108 21.5368C4.89192 21.6021 5.10827 21.6021 5.30911 21.5368C5.53744 21.4627 5.73545 21.2646 6.13146 20.8686Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+ </svg>`;
+
+      ["mousedown", "click", "mouseup", "command"].forEach((type) => {
+        randomBtn.addEventListener(
+          type,
+          (e) => {
+            e.stopPropagation();
+            if (type === "click" || type === "command") {
+              e.preventDefault();
+              this.randomizeGradient();
+            }
+          },
+          true,
+        );
+      });
+      gradientPanel.appendChild(randomBtn);
+    }
+
+    let style = document.getElementById("zen-picker-mods-palette-css");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "zen-picker-mods-palette-css";
+      document.head.appendChild(style);
+    }
+    style.textContent = `
+            #zen-picker-palette-cycle {
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                list-style-image: none !important;
+            }
+            #zen-picker-randomize {
+                position: absolute;
+                top: 15px;
+                right: 12px;
+                z-index: 1001;
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                list-style-image: none !important;
+                border: none !important;
+                padding: 0 !important;
+                min-width: fit-content !important;
+                transition: background 0.2s, opacity 0.2s;
+                appearance: none;
+                max-height: 30px;
+                max-width: 30px;
+                min-height: 30px;
+                min-width: 30px !important;
+                color: light-dark(rgba(0, 0, 0, 0.7), rgba(255, 255, 255, 0.9));
+                opacity: 0.75;
+            }
+            #zen-picker-randomize:hover {
+                background: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+                opacity: 1;
+            }
+            #zen-picker-lightness-wrapper {
+                position: relative;
+                flex: 1;
+                height: 40px;
+                display: flex;
+                align-items: center;
+            }
+            #zen-picker-lightness-slider {
+                flex: 1;
+                margin: 0 !important;
+                background: transparent;
+                z-index: 5;
+                padding: 0 5px;
+                transition: opacity 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+                opacity: 0.6; /* Increased base visibility */
+            }
+            #zen-picker-lightness-slider.zen-programmatic-change::-moz-range-thumb {
+                transition: none !important;
+            }
+            #zen-picker-lightness-slider[disabled="true"] {
+                pointer-events: none;
+            }
+            #zen-picker-lightness-slider[disabled="true"]::-moz-range-thumb {
+                display: none !important;
+            }
+            #zen-picker-lightness-slider:focus,
+            #zen-picker-lightness-slider:active,
+            #zen-picker-lightness-slider:not([disabled]):hover {
+                opacity: 1;
+            }
+            #zen-picker-lightness-slider::-moz-range-thumb {
+                background: light-dark(black, white);
+                border-radius: 999px;
+                height: var(--zen-thumb-height, 40px);
+                width: var(--zen-thumb-width, 10px);
+                cursor: pointer;
+                border: none;
+                transition: height 0.2s ease-out, width 0.2s ease-out;
+            }
+            #zen-picker-lightness-wrapper.zen-programmatic-change #zen-picker-lightness-slider::-moz-range-thumb {
+                /* Thumb position is handled by browser, but we can animate size */
+                transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            }
+            #zen-picker-lightness-slider::-moz-range-track {
+                border-radius: 999px;
+                height: 18px; /* Match native track */
+                background: transparent;
+            }
+            #zen-picker-lightness-slider::-moz-range-progress {
+                background: transparent;
+            }
+            #zen-picker-lightness-slider[disabled] {
+                pointer-events: none;
+            }
+            #zen-picker-lightness-slider[disabled]::-moz-range-thumb {
+                visibility: hidden;
+            }
+            /* SVG line styling - EXACT MATCH to native opacity slider */
+            #zen-picker-lightness-wave {
+                position: absolute;
+                left: -5px;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+                z-index: 1;
+                display: flex;
+                align-items: center;
+                justify-content: flex-start;
+            }
+            #zen-picker-lightness-wave::before {
+                content: "";
+                position: absolute;
+                width: calc(100% - 8px);
+                height: 16px;
+                background: light-dark(rgba(0, 0, 0, 0.1), rgba(255, 255, 255, 0.1));
+                border-radius: 999px;
+                pointer-events: none;
+                z-index: -1;
+                top: 50%;
+                left: 8px;
+                transform: translateY(-50%);
+            }
+            #zen-picker-lightness-wave svg {
+                overflow: visible;
+                min-width: calc(100% * 1.1);
+                scale: 1.2;
+                margin-left: 4px;
+            }
+            #zen-picker-lightness-path {
+                stroke-width: 8px;
+                transition: stroke 0.2s ease-out;
+            }
+            #zen-picker-lightness-wrapper[disabled="true"] #zen-picker-lightness-path {
+                stroke: light-dark(rgba(77, 77, 77, 0.5), rgba(161, 161, 161, 0.5)) !important;
+            }
+            /* Secondary Row - matches native #PanelUI-zen-gradient-colors-wrapper */
+            #zen-picker-secondary-row {
+                display: flex;
+                justify-content: space-between;
+                width: 100%;
+                margin-bottom: 10px;
+                align-items: center;
+                gap: 1.5rem;
+                padding: 0 var(--panel-padding, 10px);
+            }
+            /* Rotation wrapper in secondary row - match native layout */
+            #zen-picker-rotation-wrapper {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                flex: 0 0 auto;
+                position: relative;
+                z-index: 20;
+                transition: opacity 0.2s;
+            }
+            /* Controls layout */
+            #PanelUI-zen-gradient-generator-controls {
+                flex-direction: column !important;
+                align-items: stretch !important;    
+                display: flex !important;
+            }
+        `;
+    this.updateUI();
+  }
+
+  patchPicker(picker) {
+    const self = this;
+    if (!self._lastWorkspaceId) {
+      self._lastWorkspaceId = gZenWorkspaces?.activeWorkspace?.uuid || null;
+    }
+    // Capture original for forceNativeLightness
+    this.origGetColor = picker.getColorFromPosition.bind(picker);
+
+    // 1. Authoritative Update & Sync
+    const origUpdate = picker.updateCurrentWorkspace.bind(picker);
+    picker.updateCurrentWorkspace = function (skipSave = true) {
+      // A. Detect workspace change and reset palette override
+      const currentWsId = gZenWorkspaces?.activeWorkspace?.uuid;
+      const isWsChange =
+        currentWsId &&
+        self._lastWorkspaceId &&
+        currentWsId !== self._lastWorkspaceId;
+      if (isWsChange && !self._internalUpdate) {
+        self._selectedMode = null;
+      }
+
+      // B. Default back to Full if no dots (User request)
+      // Shielded: Don't reset during restoration transitions
+      if (
+        this.dots.length === 0 &&
+        self._selectedMode &&
+        !self._internalUpdate
+      ) {
+        self._selectedMode = null;
+      }
+
+      // C. Capture the native logic's result first (sets up the base state)
+      const res = origUpdate.apply(this, [skipSave]);
+
+      // D. Refresh our own tool UI (Heart/Palette icons)
+      // Trigger animation if: Workspace changed OR Lightness changed substantially OR manual save
+      const newL = this.dots[0]?.lightness ?? 50;
+      const lightnessChanged =
+        Math.abs((self._lastSyncedLightness ?? 50) - newL) > 0.5;
+      const rotationInProg = picker._rotationModule?._isDragging;
+
+      // If lightness changed from an external source (preset/favorite), reset our override mode
+      // We ignore changes triggered by our own palette cycle via _internalUpdate
+      if (lightnessChanged && !rotationInProg && !self._internalUpdate) {
+        self._selectedMode = null;
+      }
+
+      self.updateUI(
+        (!skipSave && !rotationInProg) ||
+          isWsChange ||
+          (lightnessChanged && !rotationInProg),
+      );
+
+      self._lastWorkspaceId = currentWsId;
+      self._lastSyncedLightness = newL;
+      if (this._favoritesMod) this._favoritesMod.updateButtonState();
+
+      return res;
+    };
+    // 2. Clear stale forced palette before workspace reconstruction.
+    // Without this, a forced mode from workspace A (especially B&W)
+    // can leak into workspace B during native color rebuilding.
+    const origOnWsChange = picker.onWorkspaceChange.bind(picker);
+    picker.onWorkspaceChange = function (...args) {
+      const incomingWsId =
+        args?.[0]?.uuid || gZenWorkspaces?.activeWorkspace?.uuid;
+      const isWsChange = incomingWsId && incomingWsId !== self._lastWorkspaceId;
+
+      if (isWsChange && !self._internalUpdate) {
+        self._selectedMode = null;
+      }
+
+      const res = origOnWsChange.apply(this, args);
+      if (incomingWsId) {
+        self._lastWorkspaceId = incomingWsId;
+      }
+      return res;
+    };
+    // 3. Keep native type handling for position->color math.
+    // For full palettes, type is intentionally undefined; forcing it from a stale
+    // selected mode can collapse colors to grayscale on workspace-switch inversion.
+    const origGetColor = picker.getColorFromPosition.bind(picker);
+    picker.getColorFromPosition = function (x, y, type) {
+      return origGetColor(x, y, type);
+    };
+
+    // 4. Authoritative Background: Force mode during background generation
+    const origGetGradient = picker.getGradient.bind(picker);
+    picker.getGradient = function (colors, forToolbar = false) {
+      if (self._selectedMode && colors.length > 0) {
+        const mode = self._selectedMode;
+        // Only override type/lightness for scalar modes (explicit-lightness).
+        // Per-dot palettes (Full/B&W) already have correct RGB from position
+        // calculations - stamping a single lightness on all dots would destroy
+        // their per-dot color variation and produce solid white/black.
+        if (mode.type === "explicit-lightness") {
+          const currentAlgo = this.useAlgo || "";
+          colors.forEach((c) => {
+            c.type = mode.type;
+            if (mode.lightness !== undefined) c.lightness = mode.lightness;
+            if (currentAlgo) {
+              c.algorithm = currentAlgo;
+            }
+          });
+        }
+      }
+      return origGetGradient(colors, forToolbar);
+    };
+
+    // 4. Release override if user clicks a native preset box
+    document
+      .getElementById("PanelUI-zen-gradient-generator-color-pages")
+      ?.addEventListener(
+        "click",
+        (e) => {
+          // Ignore if it's our own favorite box
+          if (e.target.classList.contains("zen-picker-favorite-box")) return;
+
+          // Only target native Zen palette preset boxes
+          if (e.target.classList.contains("zen-theme-picker-box")) {
+            self._selectedMode = null;
+            self.updateUI();
+          }
+        },
+        true,
+      );
+  }
+
+  forceNativeLightness(lightness) {
+    if (!this.origGetColor || !this.picker.panel) return;
+
+    try {
+      const panel = this.picker.panel.querySelector(
+        ".zen-theme-picker-gradient",
+      );
+      if (!panel) return;
+
+      const rect = panel.getBoundingClientRect();
+      // Constants matched to Zen's native logic
+      const padding = 30;
+      const width = rect.width + padding * 2;
+      const height = rect.height + padding * 2;
+      const radius = (width - padding) / 2;
+      const centerX = width / 2;
+      const centerY = height / 2;
+
+      // Corrected Formula: Lightness = (dist / radius) * 100
+      // Distance = (Lightness / 100) * radius
+      const dist = radius * (lightness / 100);
+
+      // Calculate x, y relative to center, then adjust for dotHalfSize(29)
+      const x = centerX + dist - 29;
+      const y = centerY - 29;
+
+      // Call original to trigger side-effect update of #currentLightness
+      this.origGetColor(x, y, "force-update");
+    } catch (e) {
+      console.error("Force Lightness Error", e);
+    }
+  }
+
+  getCurrentModeIndex() {
+    if (this._selectedMode) {
+      return PaletteModule.MODES.findIndex(
+        (m) => m.id === this._selectedMode.id,
+      );
+    }
+
+    const firstDot = this.picker.dots[0];
+    // If no dots (restoring from 0 dots), look at the theme's lightness
+    const type = firstDot
+      ? firstDot.type
+      : this.picker.currentWorkspace?.theme?.gradientColors?.[0]?.type;
+    const lightness = firstDot
+      ? firstDot.lightness
+      : (this.picker.currentWorkspace?.theme?.lightness ?? 50);
+
+    if (type === "explicit-black-white") return 5;
+    if (type === "explicit-lightness") {
+      if (lightness >= 80) return 1; // Pastel
+      if (lightness <= 20) return 4; // Deep Dark
+      if (lightness <= 45) return 3; // Dark
+      return 2; // Vibrant
+    }
+    return 0; // Full
+  }
+
+  cyclePalette() {
+    const currentIdx = this.getCurrentModeIndex();
+    const nextIdx = (currentIdx + 1) % PaletteModule.MODES.length;
+    const nextMode = PaletteModule.MODES[nextIdx];
+    this.applyMode(nextMode);
+    ZenPickerMods.Toast.show(
+      `Switched to ${this._getPaletteToastLabel(nextMode)} palette`,
+      "zen-palette-switched-toast",
+    );
+  }
+
+  randomizeGradient() {
+    const picker = this.picker;
+    const gradientPanel = picker?.panel?.querySelector(
+      ".zen-theme-picker-gradient",
+    );
+    if (!picker || !gradientPanel) return;
+
+    const rect = gradientPanel.getBoundingClientRect();
+    const panelSize = rect.width > 10 ? rect.width : 380;
+    const center = panelSize / 2;
+    const radius = panelSize / 2;
+
+    const dotCount = this._randomInt(2, 6);
+    const mode = this._pickRandomMode();
+    const primary = this._randomPrimaryPosition(center, radius);
+    const harmony = this._pickHarmony(dotCount);
+    const texture = this._randomTexture();
+    const rotation = this._pickRotation();
+
+    const seedDots = Array.from({ length: dotCount }, (_, id) => ({
+      ID: id,
+      position: { x: primary.x, y: primary.y },
+      type: mode.type,
+    }));
+
+    picker.useAlgo = harmony;
+    const harmonized =
+      picker.calculateCompliments(seedDots, "update", harmony) || seedDots;
+
+    const colorPositions = harmonized.slice(0, dotCount).map((dot, index) => ({
+      ID: index,
+      position: this._clampToCircle(dot.position, center, radius * 0.96),
+      type: mode.type,
+    }));
+
+    const primaryPos = colorPositions[0]?.position || { x: center, y: center };
+    const dx = primaryPos.x - center;
+    const dy = primaryPos.y - center;
+    const inferredPerDotLightness = Math.max(
+      0,
+      Math.min(100, (Math.hypot(dx, dy) / Math.max(1, radius)) * 100),
+    );
+    const lightness =
+      mode.type === "explicit-lightness"
+        ? mode.lightness
+        : inferredPerDotLightness;
+
+    const randomState = {
+      algo: harmony,
+      lightness: Math.round(lightness),
+      numDots: dotCount,
+      paletteType: mode.type,
+      opacity: picker.currentOpacity,
+      texture,
+      rotation,
+      dots: colorPositions.map((d) => ({
+        id: d.ID,
+        x: Math.round(d.position.x),
+        y: Math.round(d.position.y),
+      })),
+    };
+
+    const favMod = picker._favoritesMod || ZenPickerMods.favoritesMod;
+    if (favMod?.applyFavorite) {
+      favMod.applyFavorite(randomState);
+      return;
+    }
+
+    // Fallback if Favorites module is unavailable.
+    this._internalUpdate = true;
+    try {
+      this._selectedMode = mode.type === undefined ? null : mode;
+      picker.handleColorPositions(colorPositions, true);
+      if (mode.type === "explicit-lightness") {
+        picker.dots.forEach((dot) => {
+          dot.type = "explicit-lightness";
+          dot.lightness = mode.lightness;
+        });
+        this.forceNativeLightness(mode.lightness);
+      } else {
+        picker.dots.forEach((dot) => {
+          dot.type = mode.type;
+        });
+      }
+      picker.useAlgo = harmony;
+      picker.currentTexture = texture;
+      if (picker._rotationModule) {
+        picker._rotationModule.currentRotation = rotation;
+        picker._rotationModule.applyRotation();
+      } else {
+        picker.updateCurrentWorkspace(false);
+      }
+    } finally {
+      this._internalUpdate = false;
+    }
+    this.updateUI(true);
+  }
+
+  _pickHarmony(dotCount) {
+    const byCount = {
+      2: ["complementary", "singleAnalogous", "linear"],
+      3: ["splitComplementary", "triadic", "analogous", "linear"],
+      4: ["polygonal4", "analogousLinear4"],
+      5: ["polygonal5", "analogous5", "hybridAnalogous5"],
+      6: ["polygonal6", "doubleAnalogous6"],
+    };
+    return this._pickRandom(byCount[dotCount] || ["triadic"]);
+  }
+
+  _pickRandomMode() {
+    const modes = [
+      { mode: PaletteModule.MODES[0], weight: 3.4 }, // full
+      { mode: PaletteModule.MODES[2], weight: 3.2 }, // vibrant
+      { mode: PaletteModule.MODES[1], weight: 2.2 }, // pastel
+      { mode: PaletteModule.MODES[3], weight: 1.3 }, // dark
+      { mode: PaletteModule.MODES[4], weight: 0.9 }, // deep dark
+    ];
+    const picked = this._pickWeighted(modes) || PaletteModule.MODES[2];
+    const mode = { ...picked };
+    if (mode.type === "explicit-lightness") {
+      mode.lightness = Math.max(
+        8,
+        Math.min(92, mode.lightness + this._randomInt(-6, 6)),
+      );
+    }
+    return mode;
+  }
+
+  _randomPrimaryPosition(center, radius) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = radius * (0.42 + Math.pow(Math.random(), 0.85) * 0.48);
+    return {
+      x: center + Math.cos(angle) * dist,
+      y: center + Math.sin(angle) * dist,
+    };
+  }
+
+  _randomTexture() {
+    // Native texture control uses 16 fixed steps: 0, 1/16, ..., 15/16.
+    // Strong bias toward lower grain and mostly within steps 0..9.
+    const weightedSteps = [
+      { mode: 0, weight: 18 },
+      { mode: 1, weight: 15 },
+      { mode: 2, weight: 13 },
+      { mode: 3, weight: 11 },
+      { mode: 4, weight: 9 },
+      { mode: 5, weight: 8 },
+      { mode: 6, weight: 7 },
+      { mode: 7, weight: 6 },
+      { mode: 8, weight: 5 },
+      { mode: 9, weight: 4 },
+      { mode: 10, weight: 1.6 },
+      { mode: 11, weight: 1.1 },
+      { mode: 12, weight: 0.8 },
+      { mode: 13, weight: 0.6 },
+      { mode: 14, weight: 0.4 },
+      { mode: 15, weight: 0.3 },
+    ];
+    const step = this._pickWeighted(weightedSteps);
+    return step / 16;
+  }
+
+  _pickRotation() {
+    // Usually keep rotation at 0, otherwise prefer smaller offsets.
+    const weightedAngles = [
+      { mode: 0, weight: 30 },
+      { mode: 15, weight: 4.2 },
+      { mode: -15, weight: 4.2 },
+      { mode: 30, weight: 2.8 },
+      { mode: -30, weight: 2.8 },
+      { mode: 45, weight: 1.2 },
+      { mode: -45, weight: 1.2 },
+      { mode: 60, weight: 0.7 },
+      { mode: -60, weight: 0.7 },
+    ];
+    return this._pickWeighted(weightedAngles);
+  }
+
+  _clampToCircle(position, center, radius) {
+    const dx = (position?.x ?? center) - center;
+    const dy = (position?.y ?? center) - center;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= radius || dist === 0) {
+      return {
+        x: Math.max(0, Math.round(position?.x ?? center)),
+        y: Math.max(0, Math.round(position?.y ?? center)),
+      };
+    }
+    const scale = radius / dist;
+    return {
+      x: Math.round(center + dx * scale),
+      y: Math.round(center + dy * scale),
+    };
+  }
+
+  _pickWeighted(entries) {
+    const total = entries.reduce((sum, entry) => sum + entry.weight, 0);
+    let roll = Math.random() * total;
+    for (const entry of entries) {
+      roll -= entry.weight;
+      if (roll <= 0) return entry.mode;
+    }
+    return entries[entries.length - 1]?.mode;
+  }
+
+  _pickRandom(list) {
+    if (!Array.isArray(list) || list.length === 0) return null;
+    return list[Math.floor(Math.random() * list.length)];
+  }
+
+  _randomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+  }
+
+  _getPaletteToastLabel(mode) {
+    if (!mode?.id) return "Vibrant";
+    if (mode.id === "full") return "Full";
+    if (mode.id === "bw") return "B&W";
+    if (mode.id === "pastel") return "Pastel";
+    if (mode.id === "dark") return "Dark";
+    if (mode.id === "deep-dark") return "Extra Dark";
+    if (mode.id === "vibrant") return "Vibrant";
+    return mode.label || "Vibrant";
+  }
+
+  applyMode(mode) {
+    this._selectedMode = mode;
+    if (this.picker.dots.length) {
+      this._internalUpdate = true;
+      try {
+        // Correctly update local dots array avoid stale reads in updateUI/hooks
+        this.picker.dots.forEach((d) => {
+          if (mode.lightness !== undefined) d.lightness = mode.lightness;
+          d.type = mode.type;
+        });
+
+        if (mode.lightness !== undefined) {
+          this.forceNativeLightness(mode.lightness);
+        }
+
+        const positions = this.picker.dots.map((d) => ({
+          ID: d.ID,
+          position: d.position,
+          type: mode.type,
+        }));
+
+        this.picker.handleColorPositions(positions, true);
+        this.picker.updateCurrentWorkspace(false);
+      } finally {
+        this._internalUpdate = false;
+      }
+    }
+    this.updateUI(true);
+  }
+
+  updateUI(animate = false, skipSaveOnSync = false) {
+    const btn = document.getElementById("zen-picker-palette-cycle");
+    if (!btn) return;
+
+    const dotCount = this.picker.dots?.length || 0;
+    btn.disabled = dotCount === 0;
+
+    const mode = PaletteModule.MODES[this.getCurrentModeIndex()];
+    btn.setAttribute(
+      "tooltiptext",
+      `Palette: ${mode.label}${this._selectedMode ? " (Forced)" : ""}`,
+    );
+
+    // Sync Lightness Slider
+    const slider = document.getElementById("zen-picker-lightness-slider");
+    const sliderWrapper = document.getElementById(
+      "zen-picker-lightness-wrapper",
+    );
+
+    if (slider) {
+      // Disable slider if: No Dots OR Full Mode OR B&W Mode
+      const isExplicit = mode.type === "explicit-lightness";
+      const isDisabled = dotCount === 0 || !isExplicit;
+
+      slider.disabled = isDisabled;
+      // Native opacity slider disabled style handling
+      sliderWrapper?.setAttribute("disabled", isDisabled);
+      slider.style.opacity = "1"; // Keep visible as requested
+
+      // Only update slider value if we are in an explicit mode
+      if (isExplicit) {
+        // Restoration Fix: Priority = Theme > Dot > 50
+        const currentL =
+          this._selectedMode?.lightness ??
+          this.picker.currentWorkspace?.theme?.lightness ??
+          this.picker.dots[0]?.lightness ??
+          50;
+
+        if (animate && slider && !this._isAnimating) {
+          sliderWrapper?.classList.add("zen-programmatic-change");
+          this.animateSliderValue(slider, currentL);
+          setTimeout(
+            () => sliderWrapper?.classList.remove("zen-programmatic-change"),
+            500,
+          );
+        } else if (!this._isAnimating) {
+          slider.value = currentL;
+          slider.setAttribute(
+            "tooltiptext",
+            `Lightness: ${Math.round(currentL)}%`,
+          );
+          this.updateLightnessVisuals(currentL);
+        }
+      } else {
+        // Update wave visual state even when disabled (e.g. 0% for B&W)
+        const l = mode.type === "explicit-black-white" ? 0 : 50;
+        this.updateLightnessVisuals(l);
+      }
+    }
+  }
+
+  // Helper to parse SVG path commands for interpolation
+  parseSinePath(pathStr) {
+    const points = [];
+    const commands = pathStr.match(/[MCL]\s*[\d\s.\-,]+/g);
+    if (!commands) return points;
+
+    commands.forEach((command) => {
+      const type = command.charAt(0);
+      const coordsStr = command.slice(1).trim();
+      const coords = coordsStr.split(/[\s,]+/).map(Number);
+
+      switch (type) {
+        case "M":
+          points.push({ x: coords[0], y: coords[1], type: "M" });
+          break;
+        case "C":
+          if (coords.length >= 6 && coords.length % 6 === 0) {
+            for (let i = 0; i < coords.length; i += 6) {
+              points.push({
+                x1: coords[i],
+                y1: coords[i + 1],
+                x2: coords[i + 2],
+                y2: coords[i + 3],
+                x: coords[i + 4],
+                y: coords[i + 5],
+                type: "C",
+              });
+            }
+          }
+          break;
+        case "L":
+          points.push({ x: coords[0], y: coords[1], type: "L" });
+          break;
+      }
+    });
+    return points;
+  }
+
+  interpolateWavePath(progress) {
+    // Native Zen paths (Exact match: 367.037 length)
+    const linePath = `M 51.373 27.395 L 367.037 27.395`;
+    const sinePath = `M 51.373 27.395 C 60.14 -8.503 68.906 -8.503 77.671 27.395 C 86.438 63.293 95.205 63.293 103.971 27.395 C 112.738 -8.503 121.504 -8.503 130.271 27.395 C 139.037 63.293 147.803 63.293 156.57 27.395 C 165.335 -8.503 174.101 -8.503 182.868 27.395 C 191.634 63.293 200.4 63.293 209.167 27.395 C 217.933 -8.503 226.7 -8.503 235.467 27.395 C 244.233 63.293 252.999 63.293 261.765 27.395 C 270.531 -8.503 279.297 -8.503 288.064 27.395 C 296.83 63.293 305.596 63.293 314.363 27.395 C 323.13 -8.503 331.896 -8.503 340.662 27.395 M 314.438 27.395 C 323.204 -8.503 331.97 -8.503 340.737 27.395 C 349.503 63.293 358.27 63.293 367.037 27.395`;
+
+    if (!this._sinePoints) {
+      this._sinePoints = this.parseSinePath(sinePath);
+    }
+
+    if (progress <= 0.001) return linePath;
+    if (progress >= 0.999) return sinePath;
+
+    const referenceY = 27.395;
+    const t = progress;
+    let newPathData = "";
+
+    this._sinePoints.forEach((p) => {
+      switch (p.type) {
+        case "M": {
+          const interpolatedY = referenceY + (p.y - referenceY) * t;
+          newPathData += `M ${p.x} ${interpolatedY} `;
+          break;
+        }
+        case "C": {
+          const y1 = referenceY + (p.y1 - referenceY) * t;
+          const y2 = referenceY + (p.y2 - referenceY) * t;
+          const y = referenceY + (p.y - referenceY) * t;
+          newPathData += `C ${p.x1} ${y1} ${p.x2} ${y2} ${p.x} ${y} `;
+          break;
+        }
+        case "L":
+          newPathData += `L ${p.x} ${p.y} `;
+          break;
+      }
+    });
+    return newPathData;
+  }
+
+  injectSlider() {
+    if (document.getElementById("zen-picker-lightness-wrapper")) return;
+
+    // Create or get secondary row for our custom controls
+    let secondaryRow = document.getElementById("zen-picker-secondary-row");
+    if (!secondaryRow) {
+      const nativeRow = document.getElementById(
+        "PanelUI-zen-gradient-colors-wrapper",
+      );
+      if (!nativeRow) return;
+
+      secondaryRow = document.createElement("hbox");
+      secondaryRow.id = "zen-picker-secondary-row";
+      nativeRow.parentNode.insertBefore(secondaryRow, nativeRow.nextSibling);
+    }
+
+    // Create our new Lightness Slider Wrapper (left side of secondary row)
+    const sliderContainer = document.createElement("vbox");
+    sliderContainer.id = "zen-picker-lightness-wrapper";
+    sliderContainer.setAttribute("flex", "1");
+    sliderContainer.setAttribute("align", "stretch");
+
+    // 1. The Wave Box
+    const waveBox = document.createElement("hbox");
+    waveBox.id = "zen-picker-lightness-wave";
+    waveBox.setAttribute("flex", "1");
+    waveBox.style.pointerEvents = "none";
+
+    // Unique IDs for gradient to prevent conflicts
+    const gradientId = "zen-picker-lightness-generator-gradient";
+    const stop1Id = "zen-picker-lightness-stop-1";
+    const stop2Id = "zen-picker-lightness-stop-2";
+    const stop3Id = "zen-picker-lightness-stop-3";
+
+    waveBox.innerHTML = `
+            <svg viewBox="0 -7.605 455 70" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none">
+                <defs>
+                  <linearGradient id="${gradientId}" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop id="${stop1Id}" offset="0%" stop-color="light-dark(rgb(90, 90, 90), rgb(161, 161, 161))"/>
+                    <stop id="${stop2Id}" offset="0%" stop-color="light-dark(rgb(90, 90, 90), rgb(161, 161, 161))"/>
+                    <stop id="${stop3Id}" offset="100%" stop-color="light-dark(rgba(77, 77, 77, 0.5), rgba(161, 161, 161, 0.5))"/>
+                  </linearGradient>
+                </defs>
+                <path id="zen-picker-lightness-path" 
+                      d="M 51.373 27.395 L 367.037 27.395" 
+                      fill="none" 
+                      stroke-linecap="round" 
+                      stroke-linejoin="round" 
+                      style="stroke-width: 8px; stroke: light-dark(rgba(77, 77, 77, 0.5), rgba(161, 161, 161, 0.5));"/>
+            </svg>
+        `;
+
+    // 2. The Input
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.id = "zen-picker-lightness-slider";
+    slider.min = "5";
+    slider.max = "95";
+    slider.step = "any"; // Fixes bounce/snapping during JS animations
+    slider.value = "50";
+    slider.setAttribute("flex", "1");
+
+    let lastRun = 0;
+    const limit = 50;
+
+    // Initial update
+    this.updateLightnessVisuals(50); // Start at mid
+
+    // High performance local update while dragging
+    slider.addEventListener("input", (e) => {
+      let val = parseFloat(e.target.value); // Use parseFloat for "any" step
+
+      // Enforce Lightness Inversion if enabled
+      if (ZenPickerMods.modules) {
+        const dynamicMod = ZenPickerMods.modules.find(
+          (m) => m instanceof DynamicThemeModule,
+        );
+        if (dynamicMod && dynamicMod._inversionEnabled) {
+          const isDark = this.picker.isDarkMode;
+          // Dark theme requires dark gradients (val <= 50). Light theme requires light gradients (val >= 50)
+          if (isDark && val > 50) val = 50;
+          else if (!isDark && val < 50) val = 50;
+
+          // Update slider visually to the constrained value
+          if (val !== parseFloat(e.target.value)) {
+            e.target.value = val;
+          }
+        }
+      }
+
+      e.target.setAttribute("tooltiptext", `Lightness: ${Math.round(val)}%`);
+      this.updateLightnessVisuals(val);
+
+      const modeIdx = this.getCurrentModeIndex();
+      let baseMode = PaletteModule.MODES[modeIdx];
+      if (
+        !baseMode ||
+        (baseMode.type !== "explicit-lightness" &&
+          baseMode.type !== "explicit-black-white")
+      ) {
+        baseMode = PaletteModule.MODES.find((m) => m.id === "vibrant");
+      }
+
+      // Update current forced state object
+      this._selectedMode = { ...baseMode, lightness: val };
+
+      // 1. PROJECT: Direct Dot & Background projection (Fast)
+      if (this.picker.dots.length) {
+        this._internalUpdate = true;
+        try {
+          this.fastProjectLightness(val);
+        } finally {
+          this._internalUpdate = false;
+        }
+        if (this.picker._favoritesMod)
+          this.picker._favoritesMod.updateButtonState();
+      }
+    });
+
+    // Heavy Sync only on release (change)
+    slider.addEventListener("change", (e) => {
+      let val = parseFloat(e.target.value);
+
+      // Enforce Lightness Inversion if enabled
+      if (ZenPickerMods.modules) {
+        const dynamicMod = ZenPickerMods.modules.find(
+          (m) => m instanceof DynamicThemeModule,
+        );
+        if (dynamicMod && dynamicMod._inversionEnabled) {
+          const isDark = this.picker.isDarkMode;
+          if (isDark && val > 50) val = 50;
+          else if (!isDark && val < 50) val = 50;
+
+          if (val !== parseFloat(e.target.value)) {
+            e.target.value = val;
+          }
+        }
+      }
+
+      this._internalUpdate = true; // Prevent mode reset during sync
+      try {
+        this.forceNativeLightness(val);
+
+        const positions = this.picker.dots.map((d) => ({
+          ID: d.ID,
+          position: d.position,
+          type: mode.type,
+        }));
+        this.picker.handleColorPositions(positions, true);
+        this.picker.updateCurrentWorkspace(false);
+      } finally {
+        this._internalUpdate = false;
+      }
+      this.updateUI(false, true);
+    });
+
+    sliderContainer.appendChild(waveBox);
+    sliderContainer.appendChild(slider);
+
+    // Prepend to secondary row (left side)
+    secondaryRow.insertBefore(sliderContainer, secondaryRow.firstChild);
+  }
+  animateSliderValue(slider, target) {
+    if (this._isAnimating) {
+      if (this._rafId) cancelAnimationFrame(this._rafId);
+      this._isAnimating = false;
+    }
+    const start = parseFloat(slider.value);
+    if (Math.abs(start - target) < 0.5) {
+      // Threshold to prevent animation for tiny changes
+      slider.value = target;
+      this.updateLightnessVisuals(target);
+      slider.setAttribute("tooltiptext", `Lightness: ${Math.round(target)}%`);
+      return;
+    }
+
+    this._isAnimating = true;
+    let startTimestamp = null;
+    const duration = 400;
+
+    const step = (timestamp) => {
+      if (!startTimestamp) startTimestamp = timestamp;
+      const progress = Math.min((timestamp - startTimestamp) / duration, 1);
+      // Ease out cubic
+      const ease = 1 - Math.pow(1 - progress, 3);
+      const current = start + (target - start) * ease;
+
+      slider.classList.add("zen-programmatic-change");
+      slider.value = current;
+      this.updateLightnessVisuals(current);
+      // RESIZE DURING SLIDE: Update thumb size in the loop
+      const opacity = (current - 5) / 90;
+      slider.style.setProperty("--zen-thumb-height", `${40 + opacity * 15}px`);
+      slider.style.setProperty("--zen-thumb-width", `${10 + opacity * 15}px`);
+
+      if (progress < 1) {
+        this._rafId = requestAnimationFrame(step);
+      } else {
+        slider.value = target; // Final snap to target
+        this.updateLightnessVisuals(target);
+        this._isAnimating = false;
+        this._rafId = null;
+        slider.classList.remove("zen-programmatic-change");
+        slider.setAttribute("tooltiptext", `Lightness: ${Math.round(target)}%`);
+        // Final sized sync
+        const finalOpacity = (target - 5) / 90;
+        slider.style.setProperty(
+          "--zen-thumb-height",
+          `${40 + finalOpacity * 15}px`,
+        );
+        slider.style.setProperty(
+          "--zen-thumb-width",
+          `${10 + finalOpacity * 15}px`,
+        );
+      }
+    };
+    requestAnimationFrame(step);
+  }
+
+  updateLightnessVisuals(val) {
+    if (this._lastVisualVal === val) return;
+    this._lastVisualVal = val;
+
+    const slider = document.getElementById("zen-picker-lightness-slider");
+    if (!slider) return;
+
+    // Normalized 0-1
+    const opacity = (val - 5) / 90;
+
+    const svgPath = document.getElementById("zen-picker-lightness-path");
+    const gradientId = "zen-picker-lightness-generator-gradient";
+
+    if (svgPath) {
+      const d = this.interpolateWavePath(opacity);
+      svgPath.setAttribute("d", d);
+
+      // Native stop syncing
+      // Native dual-stop syncing for progress fill
+      const stop2 = document.getElementById("zen-picker-lightness-stop-2");
+      const stop3 = document.getElementById("zen-picker-lightness-stop-3");
+      const fillPct = `${Math.max(0, Math.min(100, opacity * 100))}%`;
+      if (stop2) stop2.setAttribute("offset", fillPct);
+      if (stop3) stop3.setAttribute("offset", fillPct);
+
+      if (opacity <= 0.01) {
+        svgPath.style.stroke =
+          stop3?.getAttribute("stop-color") ||
+          "light-dark(rgba(77, 77, 77, 0.5), rgba(161, 161, 161, 0.5))";
+      } else {
+        svgPath.style.stroke = `url(#${gradientId})`;
+      }
+
+      // Sync overall wave opacity with slider state
+      const wave = document.getElementById("zen-picker-lightness-wave");
+      if (wave) {
+        // User requested track and base of sine wave to remain same opacity
+        // We only hide fill and thumb via CSS if [disabled="true"]
+        wave.style.opacity = "1";
+      }
+    }
+
+    // Thumb size
+    const h = 40 + opacity * 15;
+    const w = 10 + opacity * 15;
+    slider.style.setProperty("--zen-thumb-height", `${h}px`);
+    slider.style.setProperty("--zen-thumb-width", `${w}px`);
+  }
+
+  /**
+   * Fast Projector: Directly updates dot colors and background CSS
+   * without triggering heavy native reconciliation.
+   */
+  fastProjectLightness(lightness) {
+    const picker = this.picker;
+    const docElem = document.documentElement;
+    const panel = picker.panel.querySelector(".zen-theme-picker-gradient");
+    const currentAlgo =
+      picker.useAlgo ||
+      picker.currentWorkspace?.theme?.gradientColors?.[0]?.algorithm ||
+      "";
+
+    const padding = 30;
+    const dotHalfSize = 29;
+    let width;
+    let height;
+
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      // Hidden panel can report near-zero dimensions; use stable fallback geometry.
+      if (rect.width > 10 && rect.height > 10) {
+        width = rect.width + padding * 2;
+        height = rect.height + padding * 2;
+      }
+    }
+
+    if (!width || !height) {
+      // Zen's native baseline picker size used before render.
+      const base = 380;
+      width = base + padding * 2;
+      height = base + padding * 2;
+    }
+
+    const cx = width / 2,
+      cy = height / 2;
+    const radius = (width - padding) / 2;
+
+    // 0. Sync Private State (Lightweight)
+    this.forceNativeLightness(lightness);
+
+    // 1. Update Dot Visuals (Calculate Hue & Saturation from Position)
+    const updatedColors = picker.dots.map((dot) => {
+      const x = dot.position.x + dotHalfSize;
+      const y = dot.position.y + dotHalfSize;
+      const dx = x - cx;
+      const dy = y - cy;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const normalizedDistance = 1 - Math.min(distance / radius, 1);
+
+      const h = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
+      // Exact parity with Zen's getColorFromPosition
+      const isExplicitLightness = dot.type === "explicit-lightness";
+      let s = normalizedDistance * 100;
+      if (!isExplicitLightness) {
+        s = 90 + (1 - normalizedDistance) * 10;
+      }
+      if (dot.type === "explicit-black-white") s = 0;
+
+      let l = lightness;
+      if (!isExplicitLightness) {
+        // Parity with Zen: Center is dark (0), Edge is light (100)
+        l = (1 - normalizedDistance) * 100;
+      }
+
+      dot.lightness = l;
+      if (currentAlgo) dot.algorithm = currentAlgo;
+      const rgb = picker.hslToRgb(h / 360, s / 100, l / 100);
+      const colorStr = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+
+      if (dot.element) {
+        dot.element.style.setProperty("--zen-theme-picker-dot-color", colorStr);
+      }
+      return {
+        ...dot,
+        c: rgb,
+        type: dot.type,
+        lightness: l,
+        algorithm: currentAlgo,
+      };
+    });
+
+    // 2. Update Background Visuals
+    const gradient = picker.getGradient(updatedColors);
+    const toolbarGradient = picker.getGradient(updatedColors, true);
+
+    docElem.style.setProperty("--zen-main-browser-background", gradient);
+    docElem.style.setProperty(
+      "--zen-main-browser-background-toolbar",
+      toolbarGradient,
+    );
+
+    // 3. Update Primary/Accent UI Color
+    const dominant = picker.getMostDominantColor(updatedColors);
+    if (dominant) {
+      const primary = picker.getAccentColorForUI(dominant);
+      docElem.style.setProperty("--zen-primary-color", primary);
+
+      // 4. Update Text Contrast (Text Color)
+      try {
+        const isDarkMode = picker.shouldBeDarkMode(dominant);
+        docElem.setAttribute("zen-should-be-dark-mode", isDarkMode);
+
+        const textColor = picker.getToolbarColor(isDarkMode);
+        docElem.style.setProperty(
+          "--toolbox-textcolor",
+          `rgba(${textColor[0]}, ${textColor[1]}, ${textColor[2]}, ${textColor[3]})`,
+        );
+      } catch (e) {
+        /* ignore contrast errors during drag */
+      }
+    }
+
+    // 4. Persistence Fix: Update native theme object to prevent reset during dot dragging
+    const ws = picker.currentWorkspace;
+    if (ws?.theme) {
+      ws.theme.lightness = lightness;
+    }
+
+    // 5. Dynamic Theme Switching (Hook)
+    if (this.dynamicThemeMod) {
+      this.dynamicThemeMod.checkAndApplyTheme(updatedColors, picker);
+    }
+  }
+}
+
+/**
+ * DynamicThemeModule - Switches Browser Theme based on Lightness
+ */
+class DynamicThemeModule {
+  static PREF = "zen.theme.dynamic-theme-switching";
+  static TEXT_LOCK_PREF = "zen.theme.text-lock";
+  static INVERSION_PREF = "zen.theme.lightness-inversion";
+
+  constructor() {
+    this._enabled = false;
+    this._textLockEnabled = false;
+    this._inversionEnabled = false;
+    this._lastIsDark = null;
+    this._pendingDragInversionTimer = null;
+    this._lastPickerGeometry = null;
+    this._inversionToastTimer = null;
+    this._lastClosedPerDotInversionAt = 0;
+  }
+
+  init(picker) {
+    // Expose ourselves to PaletteModule for the hook
+    if (ZenPickerMods.paletteMod) {
+      ZenPickerMods.paletteMod.dynamicThemeMod = this;
+    } else {
+      // Fallback if init order is swapped (though PaletteMod is pushed before in main list)
+      // Just wait a tick or check main array
+      const pm = ZenPickerMods.modules.find((m) => m instanceof PaletteModule);
+      if (pm) pm.dynamicThemeMod = this;
+    }
+
+    this._loadPref();
+    this._setupObservers(picker);
+    this.patchPicker(picker);
+    this._setupPresetPreviewHook(picker);
+  }
+
+  _setupObservers(picker) {
+    const self = this;
+    this._prefObserver = {
+      observe(subject, topic, data) {
+        if (topic !== "nsPref:changed") return;
+        self._loadPref();
+        if (picker.updateCurrentWorkspace) {
+          picker.updateCurrentWorkspace();
+        }
+      },
+    };
+
+    Services.prefs.addObserver(
+      DynamicThemeModule.TEXT_LOCK_PREF,
+      this._prefObserver,
+    );
+    Services.prefs.addObserver(
+      DynamicThemeModule.INVERSION_PREF,
+      this._prefObserver,
+    );
+    Services.prefs.addObserver("zen.view.window.scheme", this._prefObserver);
+
+    // System theme listener
+    const mql = window.matchMedia("(prefers-color-scheme: dark)");
+    this._sysListener = () => {
+      if (!self._inversionEnabled) {
+        // If inversion is off, just trigger a normal workspace sync to match text colors etc
+        if (self._textLockEnabled && picker.updateCurrentWorkspace) {
+          picker.updateCurrentWorkspace();
+        }
+        return;
+      }
+
+      // --- Robust Inversion Sequence for OS Theme Changes ---
+
+      // 1. Primary Inversion + Hard Refresh (500ms)
+      // This is the main fix for the "grey-out" bug. We wait for OS to settle,
+      // then force Zen to re-map colors based on the NEW OS scheme.
+      setTimeout(() => {
+        self.checkAndApplyInversion(picker, false, true);
+      }, 500);
+
+      // 2. Safety Refresh (1000ms)
+      // Ensures any final UI artifacts are cleaned up and the workspace is saved.
+      setTimeout(() => {
+        if (!picker.updateCurrentWorkspace) return;
+        // If we just applied a closed-panel per-dot inversion, a follow-up
+        // rebuild can replay stale workspace theme data and undo the flip.
+        const now = Date.now();
+        const hadRecentClosedPerDotInversion =
+          now - (self._lastClosedPerDotInversionAt || 0) < 1400;
+        if (hadRecentClosedPerDotInversion) return;
+        const pickerOpen = self._isPickerSurfaceReady(picker);
+        picker.updateCurrentWorkspace(pickerOpen ? false : true);
+      }, 1000);
+    };
+    mql.addEventListener("change", this._sysListener);
+
+    // Cleanup on window unload (optional but good practice for uc.js)
+    window.addEventListener(
+      "unload",
+      () => {
+        Services.prefs.removeObserver(
+          DynamicThemeModule.TEXT_LOCK_PREF,
+          this._prefObserver,
+        );
+        Services.prefs.removeObserver(
+          DynamicThemeModule.INVERSION_PREF,
+          this._prefObserver,
+        );
+        Services.prefs.removeObserver(
+          "zen.view.window.scheme",
+          this._prefObserver,
+        );
+        mql.removeEventListener("change", this._sysListener);
+        if (this._pendingDragInversionTimer) {
+          clearTimeout(this._pendingDragInversionTimer);
+          this._pendingDragInversionTimer = null;
+        }
+        if (this._inversionToastTimer) {
+          clearTimeout(this._inversionToastTimer);
+          this._inversionToastTimer = null;
+        }
+      },
+      { once: true },
+    );
+  }
+
+  patchPicker(picker) {
+    const self = this;
+
+    // 0. Patch shouldBeDarkMode (Covers text contrast logic)
+    const origShouldBeDark = picker.shouldBeDarkMode.bind(picker);
+    picker.shouldBeDarkMode = function (accentColor) {
+      // Re-read for responsiveness
+      try {
+        self._textLockEnabled = Services.prefs.getBoolPref(
+          DynamicThemeModule.TEXT_LOCK_PREF,
+          false,
+        );
+      } catch (e) {}
+
+      if (self._textLockEnabled) {
+        return this.isDarkMode;
+      }
+      return origShouldBeDark(accentColor);
+    };
+
+    // 1. Patch updateCurrentWorkspace (Covers palette changes, dot changes, native presets)
+    const origUpdate = picker.updateCurrentWorkspace.bind(picker);
+    picker.updateCurrentWorkspace = function (...args) {
+      // Check and enforce inversion BEFORE saving or syncing
+      // Skip for per-dot palettes (Full/B&W) to avoid re-entry that compounds
+      // the inversion and destroys per-dot color variation.
+      if (self._inversionEnabled && !self._isInverting) {
+        if (self._isDotDragInProgress(this)) {
+          // Never invert while the user is actively dragging palette dots.
+          // This prevents jitter and unintended palette flips mid-drag.
+          self._schedulePostDragInversion(this);
+          return origUpdate.apply(this, args);
+        }
+        const firstDot = this.dots?.[0];
+        // Full palettes may carry type as undefined or the string "undefined" after DOM serialization.
+        const isPerDot = firstDot && firstDot.type !== "explicit-lightness";
+        if (!isPerDot) {
+          self.checkAndApplyInversion(this, true); // true = silent, don't re-trigger update
+        }
+      }
+
+      const res = origUpdate.apply(this, args);
+      setTimeout(() => {
+        try {
+          if (!self._isPickerSurfaceReady(this)) return;
+          self.checkFromPickerState(this);
+        } catch (e) {
+          console.error("DynamicTheme update hook error", e);
+        }
+      }, 50);
+      return res;
+    };
+
+    // 2. Patch onWorkspaceChange (Covers workspace switching, favorites restoration)
+    const origOnWsChange = picker.onWorkspaceChange.bind(picker);
+    picker.onWorkspaceChange = function (...args) {
+      const res = origOnWsChange.apply(this, args);
+      setTimeout(() => {
+        try {
+          if (self._isDotDragInProgress(this)) return;
+          if (self._inversionEnabled && !self._isInverting) {
+            self.checkAndApplyInversion(this, false);
+          }
+          if (!self._isPickerSurfaceReady(this)) return;
+          self.checkFromPickerState(this);
+        } catch (e) {
+          console.error("DynamicTheme ws-change hook error", e);
+        }
+      }, 50);
+      return res;
+    };
+  }
+
+  _loadPref() {
+    try {
+      this._enabled = Services.prefs.getBoolPref(
+        DynamicThemeModule.PREF,
+        false,
+      );
+    } catch (e) {
+      this._enabled = false;
+    }
+    try {
+      this._textLockEnabled = Services.prefs.getBoolPref(
+        DynamicThemeModule.TEXT_LOCK_PREF,
+        false,
+      );
+    } catch (e) {
+      this._textLockEnabled = false;
+    }
+    try {
+      this._inversionEnabled = Services.prefs.getBoolPref(
+        DynamicThemeModule.INVERSION_PREF,
+        false,
+      );
+    } catch (e) {
+      this._inversionEnabled = false;
+    }
+  }
+
+  _isPickerSurfaceReady(picker) {
+    const popup = document.getElementById("PanelUI-zen-gradient-generator");
+    if (popup?.state !== "open") return false;
+    const panel = picker?.panel?.querySelector(".zen-theme-picker-gradient");
+    if (!panel) return false;
+    const rect = panel.getBoundingClientRect();
+    return rect.width > 80 && rect.height > 80;
+  }
+
+  _isDotDragInProgress(picker) {
+    // Native picker sets `dragging` during dot drag and `recentlyDragged`
+    // briefly after mouseup to avoid click/drag race effects.
+    return Boolean(
+      picker?.dragging || picker?.draggedDot || picker?.recentlyDragged,
+    );
+  }
+
+  _schedulePostDragInversion(picker) {
+    if (this._pendingDragInversionTimer) {
+      clearTimeout(this._pendingDragInversionTimer);
+      this._pendingDragInversionTimer = null;
+    }
+    this._pendingDragInversionTimer = setTimeout(() => {
+      this._pendingDragInversionTimer = null;
+      if (!picker || this._isDotDragInProgress(picker)) return;
+      if (!this._inversionEnabled || this._isInverting) return;
+      this.checkAndApplyInversion(picker, false, false);
+    }, 180);
+  }
+  _getPickerGeometry(picker) {
+    const padding = 30;
+    const dotHalfSize = 29;
+    const panel = picker?.panel?.querySelector(".zen-theme-picker-gradient");
+
+    if (panel) {
+      const rect = panel.getBoundingClientRect();
+      if (rect.width > 80 && rect.height > 80) {
+        const width = rect.width + padding * 2;
+        const height = (rect.height || rect.width) + padding * 2;
+        const geom = {
+          width,
+          height,
+          radius: (width - padding) / 2,
+          cx: width / 2,
+          cy: height / 2,
+          dotHalfSize,
+        };
+        this._lastPickerGeometry = geom;
+        return geom;
+      }
+    }
+
+    if (this._lastPickerGeometry) {
+      return this._lastPickerGeometry;
+    }
+
+    // Fallback to Zen's native baseline picker size when panel is hidden/unmeasurable.
+    const base = 380;
+    const width = base + padding * 2;
+    const height = base + padding * 2;
+    return {
+      width,
+      height,
+      radius: (width - padding) / 2,
+      cx: width / 2,
+      cy: height / 2,
+      dotHalfSize,
+    };
+  }
+
+  _readDotRgb(dot) {
+    if (dot?.c && Array.isArray(dot.c) && dot.c.length === 3) {
+      return dot.c.map((v) => Math.min(255, Math.max(0, Number(v) || 0)));
+    }
+    const cssColor = dot?.element?.style?.getPropertyValue(
+      "--zen-theme-picker-dot-color",
+    );
+    if (!cssColor) return null;
+    const nums = cssColor.match(/\d+/g);
+    if (!nums || nums.length < 3) return null;
+    return nums.slice(0, 3).map((n) => Math.min(255, Math.max(0, Number(n))));
+  }
+
+  _projectScalarLightnessClosed(picker, lightness) {
+    const docElem = document.documentElement;
+    const currentAlgo =
+      picker.useAlgo ||
+      picker.currentWorkspace?.theme?.gradientColors?.[0]?.algorithm ||
+      "";
+    const clampedLightness = Math.max(
+      0,
+      Math.min(100, Number(lightness) || 50),
+    );
+    const cachedGeom = this._lastPickerGeometry;
+
+    const updatedColors = picker.dots.map((dot) => {
+      let hue = 0;
+      let saturation = 0;
+
+      if (cachedGeom) {
+        const { radius, cx, cy, dotHalfSize } = cachedGeom;
+        const x = dot.position.x + dotHalfSize;
+        const y = dot.position.y + dotHalfSize;
+        const dx = x - cx;
+        const dy = y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const normDist = 1 - Math.min(dist / radius, 1);
+        hue = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
+        saturation = normDist;
+      } else {
+        const rgb = this._readDotRgb(dot);
+        if (rgb) {
+          const hsl = picker.rgbToHsl(rgb[0], rgb[1], rgb[2]);
+          hue = Number.isFinite(hsl[0]) ? hsl[0] : 0;
+          saturation = Number.isFinite(hsl[1]) ? hsl[1] : 0;
+        } else {
+          // Last fallback: geometry derivation if we couldn't read prior color either.
+          const { radius, cx, cy, dotHalfSize } =
+            this._getPickerGeometry(picker);
+          const x = dot.position.x + dotHalfSize;
+          const y = dot.position.y + dotHalfSize;
+          const dx = x - cx;
+          const dy = y - cy;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const normDist = 1 - Math.min(dist / radius, 1);
+          hue = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
+          saturation = normDist;
+        }
+      }
+
+      const nextRgb = picker.hslToRgb(
+        (((hue % 360) + 360) % 360) / 360,
+        Math.max(0, Math.min(1, saturation)),
+        clampedLightness / 100,
+      );
+      const safeRgb = [
+        Math.min(255, Math.max(0, nextRgb[0])),
+        Math.min(255, Math.max(0, nextRgb[1])),
+        Math.min(255, Math.max(0, nextRgb[2])),
+      ];
+
+      dot.lightness = clampedLightness;
+      dot.c = safeRgb;
+      if (currentAlgo) dot.algorithm = currentAlgo;
+
+      if (dot.element) {
+        dot.element.style.setProperty(
+          "--zen-theme-picker-dot-color",
+          `rgb(${safeRgb[0]}, ${safeRgb[1]}, ${safeRgb[2]})`,
+        );
+      }
+
+      return {
+        ...dot,
+        c: safeRgb,
+        type: dot.type,
+        lightness: clampedLightness,
+        algorithm: currentAlgo,
+      };
+    });
+
+    const gradient = picker.getGradient(updatedColors);
+    const toolbarGradient = picker.getGradient(updatedColors, true);
+    docElem.style.setProperty("--zen-main-browser-background", gradient);
+    docElem.style.setProperty(
+      "--zen-main-browser-background-toolbar",
+      toolbarGradient,
+    );
+
+    const dominant = picker.getMostDominantColor(updatedColors);
+    if (dominant) {
+      const primary = picker.getAccentColorForUI(dominant);
+      docElem.style.setProperty("--zen-primary-color", primary);
+      try {
+        const isDarkMode = picker.shouldBeDarkMode(dominant);
+        docElem.setAttribute("zen-should-be-dark-mode", isDarkMode);
+        const textColor = picker.getToolbarColor(isDarkMode);
+        docElem.style.setProperty(
+          "--toolbox-textcolor",
+          `rgba(${textColor[0]}, ${textColor[1]}, ${textColor[2]}, ${textColor[3]})`,
+        );
+      } catch (e) {}
+    }
+
+    const ws = picker.currentWorkspace;
+    if (ws?.theme) {
+      ws.theme.lightness = clampedLightness;
+    }
+  }
+
+  _setupPresetPreviewHook(picker) {
+    if (this._presetPreviewHooked) return;
+    this._presetPreviewHooked = true;
+
+    const pages = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-pages",
+    );
+    pages?.addEventListener(
+      "click",
+      (event) => {
+        const target = event.target;
+        const box = target?.closest?.("box[data-position]");
+        if (!box || box.classList.contains("zen-picker-favorite-box")) return;
+
+        // Temporarily normalize click payload for the selected preset only.
+        // This keeps preset preview boxes visually untouched.
+        const prevType = box.getAttribute("data-type");
+        const prevLightness = box.getAttribute("data-lightness");
+        const presetAutoInverted = this._normalizePresetBoxForInversion(
+          box,
+          picker,
+        );
+        if (presetAutoInverted) {
+          this._showInversionToast();
+        }
+
+        setTimeout(() => {
+          if (prevType === null) box.removeAttribute("data-type");
+          else box.setAttribute("data-type", prevType);
+          if (prevLightness === null) box.removeAttribute("data-lightness");
+          else box.setAttribute("data-lightness", prevLightness);
+
+          if (!this._inversionEnabled || this._isInverting) return;
+          if (!picker?.dots?.length || this._isDotDragInProgress(picker))
+            return;
+          this.checkAndApplyInversion(picker, true);
+        }, 0);
+      },
+      true,
+    );
+  }
+
+  _normalizePresetBoxForInversion(box, picker) {
+    if (!box || !picker || box.classList.contains("zen-picker-favorite-box")) {
+      return false;
+    }
+
+    if (!box.hasAttribute("data-bzgp-base-type")) {
+      box.setAttribute(
+        "data-bzgp-base-type",
+        box.getAttribute("data-type") || "explicit-lightness",
+      );
+    }
+    if (
+      box.hasAttribute("data-lightness") &&
+      !box.hasAttribute("data-bzgp-base-lightness")
+    ) {
+      box.setAttribute(
+        "data-bzgp-base-lightness",
+        box.getAttribute("data-lightness"),
+      );
+    }
+
+    const baseType = box.getAttribute("data-bzgp-base-type");
+    const baseLightness = Number(box.getAttribute("data-bzgp-base-lightness"));
+    const isExplicitLightness = baseType === "explicit-lightness";
+    const isBW = baseType === "explicit-black-white";
+    const isDark = picker.isDarkMode;
+
+    let shouldInvert = false;
+    if (this._inversionEnabled) {
+      if (isExplicitLightness && Number.isFinite(baseLightness)) {
+        shouldInvert =
+          (isDark && baseLightness > 50) || (!isDark && baseLightness < 50);
+      } else if (isBW) {
+        // B&W presets in Zen usually have a data-lightness if they are solid,
+        // or we check the average dot position. Since we are inside a preset box click,
+        // we can check if it has a lightness. If not, we assume based on ID or index,
+        // but easier to check the attribute.
+        if (Number.isFinite(baseLightness)) {
+          shouldInvert =
+            (isDark && baseLightness > 50) || (!isDark && baseLightness < 50);
+        } else {
+          // Fallback: If no lightness is set, check if the box has "White" or "Black" in its style/id if possible,
+          // but usually Zen sets d-lightness. If not, we skip.
+        }
+      }
+    }
+
+    if (isExplicitLightness || isBW) {
+      box.setAttribute("data-type", baseType);
+    }
+
+    if (Number.isFinite(baseLightness)) {
+      const nextLightness = shouldInvert ? 100 - baseLightness : baseLightness;
+      box.setAttribute("data-lightness", String(Math.round(nextLightness)));
+    }
+
+    return shouldInvert;
+  }
+
+  _refreshNativePresetBoxes(picker) {
+    // Intentionally no-op: we do not mutate preset preview boxes.
+  }
+
+  _showInversionToast() {
+    ZenPickerMods.Toast.show(
+      "Gradient inverted successfully!",
+      "zen-gradient-inverted-toast",
+    );
+  }
+
+  checkFromPickerState(picker) {
+    if (!picker.dots || !picker.dots.length) return;
+
+    const panel = picker.panel?.querySelector(".zen-theme-picker-gradient");
+    if (!panel) return;
+
+    const rect = panel.getBoundingClientRect();
+    const padding = 30;
+    const width = rect.width + padding * 2;
+    const radius = (width - padding) / 2;
+    const dotHalfSize = 29;
+    const cx = width / 2;
+    const cy = (rect.height + padding * 2) / 2;
+    this._lastPickerGeometry = {
+      width,
+      height: rect.height + padding * 2,
+      radius,
+      cx,
+      cy,
+      dotHalfSize,
+    };
+
+    const computedDots = picker.dots.map((dot) => {
+      // If 'c' exists and looks valid, use it
+      if (dot.c && Array.isArray(dot.c) && dot.c.length === 3) return dot;
+
+      const x = dot.position.x + dotHalfSize;
+      const y = dot.position.y + dotHalfSize;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const normDist = 1 - Math.min(dist / radius, 1);
+
+      const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
+
+      const isExplicitLightness = dot.type === "explicit-lightness";
+      let s = normDist * 100;
+      if (!isExplicitLightness) {
+        s = 90 + (1 - normDist) * 10;
+      }
+      if (dot.type === "explicit-black-white") s = 0;
+
+      // Lightness derivation
+      let l;
+      if (!isExplicitLightness) {
+        l = (1 - normDist) * 100;
+      } else {
+        l =
+          dot.lightness !== undefined
+            ? dot.lightness
+            : (picker.dots[0]?.lightness ?? 50);
+      }
+
+      const rgb = picker.hslToRgb(deg / 360, s / 100, l / 100);
+      return { ...dot, c: rgb };
+    });
+
+    if (this._inversionEnabled && !this._isDotDragInProgress(picker)) {
+      this.checkAndApplyInversion(picker);
+    }
+
+    this.checkAndApplyTheme(computedDots, picker);
+  }
+
+  checkAndApplyTheme(colors, picker) {
+    // 1. Refresh Pref (Fast read)
+    try {
+      if (!Services.prefs.getBoolPref(DynamicThemeModule.PREF, false)) return;
+    } catch (e) {
+      return;
+    }
+
+    // 2. Determine "Should be Dark Mode"
+    // picker.shouldBeDarkMode(color) returns true if the background is DARK (requiring light text)
+    // Therefore, we want the browser theme to be DARK (1) if shouldBeDarkMode is TRUE.
+
+    try {
+      const dominant = picker.getMostDominantColor(colors);
+      if (!dominant) return;
+
+      const shouldBeDark = picker.shouldBeDarkMode(dominant);
+
+      // 3. Check Current System State to avoid redundant "sets"
+      // Note: We can't easily read "ui.systemUsesDarkTheme" directly as a property trust-ably if it's set to "0" (auto).
+      // But we can check our last applied state or just set it if different.
+
+      if (this._lastIsDark === shouldBeDark) return;
+
+      // 4. Apply
+      this._lastIsDark = shouldBeDark;
+      // 1 = Dark, 0 = Light (actually 0 is auto/light, usually 0 forces light if 1 is dark in older Gecko,
+      // but in Zen/Gecko, ui.systemUsesDarkTheme: 1 is Dark, 0 is Light.
+      // Wait, let's verify. usually checking standard user.js:
+      // ui.systemUsesDarkTheme = 1 (Dark)
+      // ui.systemUsesDarkTheme = 0 (Light)
+
+      // Actually, let's be safer:
+      // If shouldBeDark is true -> We want DARK theme -> Set 1
+      // If shouldBeDark is false -> We want LIGHT theme -> Set 0
+
+      Services.prefs.setIntPref("ui.systemUsesDarkTheme", shouldBeDark ? 1 : 0);
+    } catch (e) {
+      // calculated color might be invalid during drag transition
+    }
+  }
+
+  checkAndApplyInversion(picker, silent = false, forceHardRefresh = false) {
+    if (!this._inversionEnabled || !picker.dots || !picker.dots.length) return;
+    if (this._isDotDragInProgress(picker)) return;
+
+    // Prevent recursive loop if we are already inverting
+    if (this._isInverting) return;
+
+    // Use direct OS detection if forceHardRefresh is true (during OS theme switch)
+    const isDark = forceHardRefresh
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : picker.isDarkMode;
+
+    const firstDot = picker.dots[0];
+    // Full palettes may carry type as undefined or "undefined"; both are per-dot.
+    const isPerDotPalette = firstDot.type !== "explicit-lightness";
+    const surfaceReady = this._isPickerSurfaceReady(picker);
+
+    // Geometry (open panel if available, otherwise cached/fallback geometry).
+    const geom = this._getPickerGeometry(picker);
+    const { radius, cx, cy, dotHalfSize } = geom;
+
+    // Determine current lightness (average if per-dot, or scalar)
+    let currentL;
+    if (isPerDotPalette) {
+      const avgDist =
+        picker.dots.reduce((sum, d) => {
+          const dx = d.position.x + dotHalfSize - cx;
+          const dy = d.position.y + dotHalfSize - cy;
+          return sum + Math.sqrt(dx * dx + dy * dy);
+        }, 0) / picker.dots.length;
+      currentL = (avgDist / radius) * 100;
+    } else {
+      const dotLightness = Number(firstDot.lightness);
+      const wsLightness = Number(picker.currentWorkspace?.theme?.lightness);
+      currentL = Number.isFinite(dotLightness)
+        ? dotLightness
+        : Number.isFinite(wsLightness)
+          ? wsLightness
+          : 50;
+    }
+
+    // Dark theme requires dark gradients (val <= 50). Light theme requires light gradients (val >= 50)
+    const needsInversion =
+      (isDark && currentL > 50) || (!isDark && currentL < 50);
+
+    if (needsInversion || forceHardRefresh) {
+      this._isInverting = true;
+      try {
+        const newPositions = [];
+        let scalarNewL = currentL;
+
+        if (needsInversion) {
+          if (isPerDotPalette) {
+            // RADIAL FLIP: Move dots between center (dark) and edge (light)
+            picker.dots.forEach((d) => {
+              const x = d.position.x + dotHalfSize;
+              const y = d.position.y + dotHalfSize;
+              const dx = x - cx;
+              const dy = y - cy;
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              const angle = Math.atan2(dy, dx);
+
+              // Invert distance: D' = Radius - D (clamped)
+              const newDist = Math.max(0, Math.min(radius, radius - dist));
+
+              newPositions.push({
+                ID: d.ID,
+                position: {
+                  x: cx + newDist * Math.cos(angle) - dotHalfSize,
+                  y: cy + newDist * Math.sin(angle) - dotHalfSize,
+                },
+                type: d.type,
+              });
+
+              // Let the projector/native logic handle the new per-dot lightness
+              delete d.lightness;
+            });
+          } else {
+            // SCALAR INVERSION: Mirror fixed lightness
+            scalarNewL = 100 - currentL;
+            picker.dots.forEach((d) => {
+              d.lightness = scalarNewL;
+            });
+          }
+        }
+
+        const finalL =
+          isPerDotPalette && needsInversion ? 100 - currentL : scalarNewL;
+
+        // Sync UI Components
+        const slider = document.getElementById("zen-picker-lightness-slider");
+        if (slider) slider.value = finalL;
+        if (ZenPickerMods.paletteMod)
+          ZenPickerMods.paletteMod.updateLightnessVisuals(finalL);
+
+        if (isPerDotPalette && needsInversion) {
+          // Apply flipped positions
+          if (surfaceReady) {
+            picker.handleColorPositions(newPositions, true);
+          } else {
+            const newPosById = new Map(
+              newPositions.map((p) => [p.ID, p.position]),
+            );
+            picker.dots.forEach((d) => {
+              const pos = newPosById.get(d.ID);
+              if (!pos) return;
+              d.position = { x: pos.x, y: pos.y };
+              if (d.element) {
+                d.element.style.left = `${pos.x}px`;
+                d.element.style.top = `${pos.y}px`;
+                d.element.setAttribute(
+                  "data-position",
+                  JSON.stringify({
+                    x: Math.round(pos.x),
+                    y: Math.round(pos.y),
+                  }),
+                );
+              }
+            });
+          }
+
+          // Rebuild per-dot RGB from new positions so getGradient
+          // receives dots with correct per-dot colors.
+          // Without this, the native pipeline would stamp a single
+          // #currentLightness on all dots, producing solid white/black.
+          picker.dots.forEach((d) => {
+            const x = d.position.x + dotHalfSize;
+            const y = d.position.y + dotHalfSize;
+            const ddx = x - cx;
+            const ddy = y - cy;
+            const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+            const normDist = 1 - Math.min(dist / radius, 1);
+            const deg = ((Math.atan2(ddy, ddx) * 180) / Math.PI + 360) % 360;
+
+            const radialRatio = 1 - normDist;
+            let s, l;
+            if (d.type === "explicit-black-white") {
+              s = 0;
+              l = radialRatio * 100;
+            } else {
+              // Full palette parity with native getColorFromPosition:
+              // saturation: 90 at center, 100 at edge.
+              s = 90 + radialRatio * 10;
+              l = radialRatio * 100;
+            }
+            d.lightness = l;
+            const rgb = picker.hslToRgb(deg / 360, s / 100, l / 100);
+            d.c = [
+              Math.min(255, Math.max(0, rgb[0])),
+              Math.min(255, Math.max(0, rgb[1])),
+              Math.min(255, Math.max(0, rgb[2])),
+            ];
+          });
+
+          if (!surfaceReady) {
+            // Closed-panel path: apply gradients directly from recomputed dots.
+            const currentAlgo =
+              picker.useAlgo ||
+              picker.currentWorkspace?.theme?.gradientColors?.[0]?.algorithm ||
+              "";
+            const updatedColors = picker.dots.map((d) => ({
+              ...d,
+              c: d.c,
+              type: d.type,
+              lightness: d.lightness,
+              algorithm: currentAlgo,
+            }));
+            const docElem = document.documentElement;
+            const gradient = picker.getGradient(updatedColors);
+            const toolbarGradient = picker.getGradient(updatedColors, true);
+            docElem.style.setProperty(
+              "--zen-main-browser-background",
+              gradient,
+            );
+            docElem.style.setProperty(
+              "--zen-main-browser-background-toolbar",
+              toolbarGradient,
+            );
+            const dominant = picker.getMostDominantColor(updatedColors);
+            if (dominant) {
+              const primary = picker.getAccentColorForUI(dominant);
+              docElem.style.setProperty("--zen-primary-color", primary);
+              try {
+                const isDarkMode = picker.shouldBeDarkMode(dominant);
+                docElem.setAttribute("zen-should-be-dark-mode", isDarkMode);
+                const textColor = picker.getToolbarColor(isDarkMode);
+                docElem.style.setProperty(
+                  "--toolbox-textcolor",
+                  `rgba(${textColor[0]}, ${textColor[1]}, ${textColor[2]}, ${textColor[3]})`,
+                );
+              } catch (e) {}
+            }
+
+            // Persist the per-dot inversion so any delayed refresh uses
+            // the new (already inverted) state instead of stale theme data.
+            const ws = picker.currentWorkspace;
+            this._lastClosedPerDotInversionAt = Date.now();
+            if (ws?.theme) {
+              ws.theme.type = "gradient";
+              ws.theme.lightness = finalL;
+              ws.theme.gradientColors = picker.dots.map((d) => ({
+                c: Array.isArray(d.c) ? [d.c[0], d.c[1], d.c[2]] : [0, 0, 0],
+                isCustom: Boolean(d.isCustom),
+                isPrimary: Boolean(d.isPrimary),
+                algorithm: currentAlgo,
+                lightness:
+                  Number.isFinite(Number(d.lightness))
+                    ? Number(d.lightness)
+                    : finalL,
+                position: {
+                  x: Number(d.position?.x ?? 0),
+                  y: Number(d.position?.y ?? 0),
+                },
+                type: d.type,
+              }));
+              try {
+                if (gZenWorkspaces?.saveWorkspace) {
+                  gZenWorkspaces.saveWorkspace(ws);
+                }
+              } catch (e) {}
+            }
+          }
+        } else if (!isPerDotPalette && needsInversion) {
+          // Normal Scalar Path
+          if (!surfaceReady) {
+            this._projectScalarLightnessClosed(picker, scalarNewL);
+          } else if (ZenPickerMods.paletteMod) {
+            ZenPickerMods.paletteMod.fastProjectLightness(scalarNewL);
+          } else {
+            this._projectScalarLightnessClosed(picker, scalarNewL);
+          }
+        }
+
+        if (forceHardRefresh || needsInversion) {
+          setTimeout(() => {
+            if (isPerDotPalette && !surfaceReady) return;
+            // For per-dot palettes, use skipSave=true to avoid the
+            // destructive onWorkspaceChange path that destroys all
+            // dots and recreates them with a single scalar lightness.
+            picker.updateCurrentWorkspace(isPerDotPalette);
+          }, 50);
+        }
+
+        if (needsInversion) {
+          this._showInversionToast();
+        }
+      } finally {
+        setTimeout(() => {
+          this._isInverting = false;
+        }, 200);
+      }
+    }
+  }
+}
+
+/**
+ * FavoritesModule - Global Theme Presets
+ */
+class FavoritesModule {
+  constructor() {
+    this._dragFromIndex = null;
+    this._suppressFavoriteClick = false;
+    this._suppressClickTimer = null;
+    this._pageHoverTimer = null;
+    this._pageHoverDir = 0;
+    this._pageHoverWrapper = null;
+    this._updateFavoritePagination = null;
+  }
+
+  init(picker) {
+    if (picker._favoritesModPatched) return;
+    this.picker = picker;
+    // Load favorites from file (async, non-blocking)
+    ZenPickerMods.FavoritesStorage.load().then(() => {
+      this.refreshFavoritesUI();
+      this.updateButtonState();
+    });
+    this.injectUI();
+    this.patchLogic(picker);
+    picker._favoritesMod = this;
+    picker._favoritesModPatched = true;
+  }
+
+  injectUI() {
+    const actions = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-actions",
+    );
+    if (!actions || document.getElementById("zen-picker-favorite-save")) return;
+
+    const btn = document.createElement("button");
+    btn.id = "zen-picker-favorite-save";
+    btn.className = "subviewbutton";
+    btn.setAttribute("tooltiptext", "Toggle Favorite");
+
+    // Prevent palette from stealing focus/clicks and dot-snapping
+    ["mousedown", "click", "mouseup", "command"].forEach((type) => {
+      btn.addEventListener(
+        type,
+        (e) => {
+          e.stopPropagation();
+          if (type === "click" || type === "command") {
+            e.preventDefault();
+            this.toggleFavorite();
+          }
+        },
+        true,
+      );
+    });
+
+    actions.appendChild(btn);
+
+    let style = document.getElementById("zen-picker-mods-favorites-css");
+    if (!style) {
+      style = document.createElement("style");
+      style.id = "zen-picker-mods-favorites-css";
+      document.head.appendChild(style);
+    }
+    style.textContent = `
+            #zen-picker-favorite-save {
+                display: flex !important;
+                align-items: center;
+                justify-content: center;
+                list-style-image: none !important;
+                opacity: 1;
+            }
+            #zen-picker-favorite-save[disabled] {
+                opacity: 0.3 !important;
+                pointer-events: none !important;
+            }
+            #PanelUI-zen-gradient-generator-scheme {
+                opacity: 0.6 !important;
+            }
+            #zen-picker-favorite-save::before {
+                content: "";
+                width: 18px;
+                height: 18px;
+                background: currentColor;
+                mask: url("data:image/svg+xml,%3Csvg width='100%25' height='100%25' viewBox='0 0 24 24' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath fill-rule='evenodd' clip-rule='evenodd' d='M11.9932 5.13581C9.9938 2.7984 6.65975 2.16964 4.15469 4.31001C1.64964 6.45038 1.29697 10.029 3.2642 12.5604C4.89982 14.6651 9.84977 19.1041 11.4721 20.5408C11.6536 20.7016 11.7444 20.7819 11.8502 20.8135C11.9426 20.8411 12.0437 20.8411 12.1361 20.8135C12.2419 20.7819 12.3327 20.7016 12.5142 20.5408C14.1365 19.1041 19.0865 14.6651 20.7221 12.5604C22.6893 10.029 22.3797 6.42787 19.8316 4.31001C17.2835 2.19216 13.9925 2.7984 11.9932 5.13581Z' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat center;
+                mask-size: contain;
+                position: relative;
+                z-index: 2;
+                pointer-events: none;
+            }
+            #zen-picker-favorite-save:hover::before {
+                opacity: 1;
+            }
+            #zen-picker-favorite-save.is-favorite::before {
+                background: #f44336 !important;
+                mask: url("data:image/svg+xml,%3Csvg width='100%25' height='100%25' viewBox='0 0 24 24' fill='black' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11.9932 5.13581C9.9938 2.7984 6.65975 2.16964 4.15469 4.31001C1.64964 6.45038 1.29697 10.029 3.2642 12.5604C4.89982 14.6651 9.84977 19.1041 11.4721 20.5408C11.6536 20.7016 11.7444 20.7819 11.8502 20.8135C11.9426 20.8411 12.0437 20.8411 12.1361 20.8135C12.2419 20.7819 12.3327 20.7016 12.5142 20.5408C14.1365 19.1041 19.0865 14.6651 20.7221 12.5604C22.6893 10.029 22.3797 6.42787 19.8316 4.31001C17.2835 2.19216 13.9925 2.7984 11.9932 5.13581Z'/%3E%3C/svg%3E") no-repeat center;
+            }
+            
+            /* Favorites Pages & Grid */
+            .zen-picker-favorites-page {
+                justify-content: space-between;
+                min-width: 100%;
+                padding: 0 1px;
+            }
+            .zen-picker-favorite-box {
+                width: 26px;
+                height: 26px;
+                box-shadow: 0 0 1px 1px rgba(0, 0, 0, 0.1);
+                border-radius: 50%;
+                margin: 2px 0;
+                cursor: pointer;
+                position: relative;
+                transition: transform 0.1s;
+                overflow: visible !important;
+            }
+            .zen-picker-favorite-box:not(.is-ghost) {
+                cursor: grab;
+            }
+            #PanelUI-zen-gradient-generator-color-pages[dragging-favorite="true"] .zen-picker-favorite-box:not(.is-ghost):not([dragged="true"]) {
+                opacity: 0.62;
+                pointer-events: none;
+            }
+            .zen-picker-favorite-box.zen-dragging {
+                opacity: 0.45;
+                transform: scale(0.94) !important;
+                cursor: grabbing !important;
+            }
+            .zen-picker-favorite-box[dragged="true"] {
+                position: fixed !important;
+                z-index: 2147483647 !important;
+                pointer-events: none !important;
+                transform: none !important;
+                transform-origin: top left !important;
+                box-shadow: 0 10px 22px rgba(0, 0, 0, 0.28), 0 0 0 1px rgba(255,255,255,0.25);
+                transition: none !important;
+                margin: 0 !important;
+            }
+            .zen-picker-favorite-box.zen-drop-target {
+                outline: none !important;
+                transform: none !important;
+            }
+            .zen-picker-favorite-box:not([dragged="true"]):hover {
+                transform: scale(1.05);
+            }
+            .zen-picker-favorite-box:not([dragged="true"]):active {
+                transform: scale(0.95);
+            }
+            .zen-picker-favorite-box:after {
+                content: "";
+                position: absolute;
+                bottom: -2px;
+                right: -2px;
+                width: 12px;
+                height: 12px;
+                background: #f44336;
+                mask: url("data:image/svg+xml,%3Csvg width='100%25' height='100%25' viewBox='0 0 24 24' fill='black' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M11.9932 5.13581C9.9938 2.7984 6.65975 2.16964 4.15469 4.31001C1.64964 6.45038 1.29697 10.029 3.2642 12.5604C4.89982 14.6651 9.84977 19.1041 11.4721 20.5408C11.6536 20.7016 11.7444 20.7819 11.8502 20.8135C11.9426 20.8411 12.0437 20.8411 12.1361 20.8135C12.2419 20.7819 12.3327 20.7016 12.5142 20.5408C14.1365 19.1041 19.0865 14.6651 20.7221 12.5604C22.6893 10.029 22.3797 6.42787 19.8316 4.31001C17.2835 2.19216 13.9925 2.7984 11.9932 5.13581Z'/%3E%3C/svg%3E") no-repeat center;
+                mask-size: contain;
+                pointer-events: none;
+                filter: drop-shadow(0 0 1px white);
+                z-index: 2;
+            }
+            .zen-picker-favorite-box[data-num-dots="2"] {
+                background: linear-gradient(135deg, var(--c1), var(--c2)) !important;
+            }
+            .zen-picker-favorite-box[data-num-dots="3"] {
+                background: radial-gradient(circle at 0% 0%, var(--c1), transparent 100%), 
+                            radial-gradient(circle at 100% 0%, var(--c2), transparent 100%),
+                            linear-gradient(to top, var(--c3) 0%, transparent 60%) !important;
+            }
+            .zen-picker-favorite-box[data-num-dots="4"] {
+                background: radial-gradient(circle at 0% 0%, var(--c1), transparent 70%),
+                            radial-gradient(circle at 100% 0%, var(--c2), transparent 70%),
+                            radial-gradient(circle at 0% 100%, var(--c3), transparent 70%),
+                            linear-gradient(-45deg, var(--c4) 0%, transparent 100%) !important;
+            }
+            .zen-picker-favorite-box[data-num-dots="5"] {
+                background: radial-gradient(circle at 0% 0%, var(--c1), transparent 60%),
+                            radial-gradient(circle at 100% 0%, var(--c2), transparent 60%),
+                            radial-gradient(circle at 0% 100%, var(--c3), transparent 60%),
+                            radial-gradient(circle at 100% 100%, var(--c4), transparent 60%),
+                            linear-gradient(-45deg, var(--c5) 0%, transparent 100%) !important;
+            }
+            .zen-picker-favorite-box[data-num-dots="6"] {
+                background: radial-gradient(circle at 0% 0%, var(--c1), transparent 60%),
+                            radial-gradient(circle at 100% 0%, var(--c2), transparent 60%),
+                            radial-gradient(circle at 0% 100%, var(--c3), transparent 60%),
+                            radial-gradient(circle at 50% 100%, var(--c4), transparent 60%),
+                            radial-gradient(circle at 100% 100%, var(--c5), transparent 60%),
+                            linear-gradient(-45deg, var(--c6) 0%, transparent 100%) !important;
+            }
+
+            .zen-picker-favorite-box.is-ghost {
+                background: light-dark(rgba(0,0,0,0.03), rgba(255,255,255,0.05)) !important;
+                border: 1px dashed light-dark(rgba(0,0,0,0.1), rgba(255,255,255,0.15)) !important;
+                box-shadow: none !important;
+                pointer-events: auto !important;
+                cursor: default !important;
+            }
+            .zen-picker-favorite-box.zen-favorite-placeholder {
+                background: light-dark(rgba(0,0,0,0.03), rgba(255,255,255,0.05)) !important;
+                border: 1px dashed light-dark(rgba(0,0,0,0.22), rgba(255,255,255,0.30)) !important;
+                box-shadow: none !important;
+                opacity: 1 !important;
+                pointer-events: none !important;
+            }
+            .zen-picker-favorite-box.zen-favorite-placeholder.entering {
+                animation: zen-favorite-slot-pop 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+            }
+            @keyframes zen-favorite-slot-pop {
+                0% { transform: scale(0.86); opacity: 0.25; }
+                100% { transform: scale(1); opacity: 1; }
+            }
+            .zen-picker-favorite-box.is-ghost::before { display: none !important; }
+            .zen-picker-favorite-box.is-ghost:after { display: none !important; }
+            .zen-picker-favorite-box.zen-favorite-placeholder::before { display: none !important; }
+            .zen-picker-favorite-box.zen-favorite-placeholder:after { display: none !important; }
+
+            /* Heart Transition */
+            .zen-picker-favorite-heart {
+                transition: fill 0.6s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease;
+                opacity: 0.5;
+            }
+            .zen-picker-favorite-heart[active="true"] {
+                fill: #ef4444 !important;
+                opacity: 1;
+            }
+            
+            /* Box overlay heart */
+            .zen-picker-favorite-box .zen-picker-favorite-heart[active="true"] {
+                fill: white !important;
+                opacity: 0.9;
+            }
+            
+            /* Favorite Pop-in Animation */
+            .zen-favorite-pop-in {
+                animation: zen-favorite-pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+            }
+            @keyframes zen-favorite-pop {
+                0% { transform: scale(0.6); opacity: 0; }
+                100% { transform: scale(1); opacity: 1; }
+            }
+
+            /* Restoration Transitions (Bug 3) */
+            #PanelUI-zen-gradient-generator.zen-favorites-restoring #PanelUI-zen-gradient-generator-opacity {
+                transition: --zen-thumb-height 0.4s ease, --zen-thumb-width 0.4s ease !important;
+            }
+            #PanelUI-zen-gradient-generator.zen-favorites-restoring #PanelUI-zen-gradient-slider-wave path {
+                transition: d 0.4s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.4s ease !important;
+            }
+        `;
+  }
+
+  _getFavs() {
+    return ZenPickerMods.FavoritesStorage.get();
+  }
+
+  _saveFavs(favs) {
+    ZenPickerMods.FavoritesStorage.save(favs);
+  }
+
+  _setDragClickSuppression(duration = 220) {
+    this._suppressFavoriteClick = true;
+    if (this._suppressClickTimer) {
+      clearTimeout(this._suppressClickTimer);
+      this._suppressClickTimer = null;
+    }
+    this._suppressClickTimer = setTimeout(() => {
+      this._suppressFavoriteClick = false;
+      this._suppressClickTimer = null;
+    }, duration);
+  }
+
+  _clearDragStyles(keepDragged = false) {
+    document
+      .querySelectorAll(
+        ".zen-picker-favorite-box.zen-dragging, .zen-picker-favorite-box.zen-drop-target",
+      )
+      .forEach((node) => {
+        if (!keepDragged) node.classList.remove("zen-dragging");
+        node.classList.remove("zen-drop-target");
+      });
+  }
+
+  _clearPageHoverTimer() {
+    if (this._pageHoverTimer) {
+      clearTimeout(this._pageHoverTimer);
+      this._pageHoverTimer = null;
+    }
+    this._pageHoverDir = 0;
+    this._pageHoverWrapper = null;
+  }
+
+  _isPointInsideElement(clientX, clientY, element) {
+    if (!element) return false;
+    const rect = element.getBoundingClientRect();
+    return (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    );
+  }
+
+  _scrollFavoritePages(pagesWrapper, dir) {
+    if (!pagesWrapper || !dir) return;
+    const favoritePages = Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorites-page"),
+    );
+    if (favoritePages.length <= 1) return;
+
+    const width = Math.max(1, pagesWrapper.offsetWidth || 1);
+    const maxFavoriteIndex = favoritePages.length - 1;
+    let currentIndex = Math.round(pagesWrapper.scrollLeft / width);
+    currentIndex = Math.max(0, Math.min(maxFavoriteIndex, currentIndex));
+
+    const nextIndex = Math.max(
+      0,
+      Math.min(maxFavoriteIndex, currentIndex + (dir < 0 ? -1 : 1)),
+    );
+    if (nextIndex === currentIndex) return;
+
+    pagesWrapper.scrollLeft = nextIndex * width;
+  }
+
+  _queueFavoritePageMove(pagesWrapper, dir) {
+    if (!pagesWrapper || !dir) return;
+    if (
+      this._pageHoverTimer &&
+      this._pageHoverDir === dir &&
+      this._pageHoverWrapper === pagesWrapper
+    ) {
+      return;
+    }
+
+    this._clearPageHoverTimer();
+    this._pageHoverDir = dir;
+    this._pageHoverWrapper = pagesWrapper;
+    this._pageHoverTimer = setTimeout(() => {
+      const wrapper = this._pageHoverWrapper;
+      const direction = this._pageHoverDir;
+      this._clearPageHoverTimer();
+      this._scrollFavoritePages(wrapper, direction);
+    }, 500);
+  }
+
+  _handleFavoritePageHover(clientX, clientY, pagesWrapper, leftBtn, rightBtn) {
+    if (this._dragFromIndex === null || !pagesWrapper) {
+      this._clearPageHoverTimer();
+      return;
+    }
+
+    if (
+      leftBtn &&
+      !leftBtn.disabled &&
+      this._isPointInsideElement(clientX, clientY, leftBtn)
+    ) {
+      this._queueFavoritePageMove(pagesWrapper, -1);
+      return;
+    }
+
+    if (
+      rightBtn &&
+      !rightBtn.disabled &&
+      this._isPointInsideElement(clientX, clientY, rightBtn)
+    ) {
+      this._queueFavoritePageMove(pagesWrapper, 1);
+      return;
+    }
+
+    this._clearPageHoverTimer();
+  }
+
+  _repositionDraggedFavoriteBox(placeholder, clientX, clientY, pagesWrapper) {
+    if (!placeholder || !pagesWrapper) return;
+    this._clearDragStyles(true);
+
+    let slots = Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorite-box"),
+    );
+
+    const swapWithNeighbor = (direction) => {
+      const currentSlots = Array.from(
+        pagesWrapper.querySelectorAll(".zen-picker-favorite-box"),
+      );
+      const currentIndex = currentSlots.indexOf(placeholder);
+      const neighborIndex = currentIndex + direction;
+      if (neighborIndex < 0 || neighborIndex >= currentSlots.length)
+        return false;
+      const neighbor = currentSlots[neighborIndex];
+      if (!neighbor || neighbor === placeholder) return false;
+
+      if (neighbor.parentNode === placeholder.parentNode) {
+        if (direction > 0) {
+          placeholder.parentNode.insertBefore(neighbor, placeholder);
+        } else {
+          placeholder.parentNode.insertBefore(placeholder, neighbor);
+        }
+        return true;
+      }
+
+      const placeholderParent = placeholder.parentNode;
+      const placeholderNext = placeholder.nextSibling;
+      const neighborParent = neighbor.parentNode;
+      const neighborNext = neighbor.nextSibling;
+      if (!placeholderParent || !neighborParent) return false;
+
+      placeholderParent.insertBefore(neighbor, placeholderNext);
+      neighborParent.insertBefore(placeholder, neighborNext);
+      return true;
+    };
+
+    let hoveredSlot = null;
+    let placeBefore = true;
+
+    for (const slot of slots) {
+      if (slot === placeholder) continue;
+
+      const rect = slot.getBoundingClientRect();
+      const isInside =
+        clientX > rect.left &&
+        clientX < rect.right &&
+        clientY > rect.top &&
+        clientY < rect.bottom;
+      if (!isInside) continue;
+
+      hoveredSlot = slot;
+      placeBefore = clientX < rect.left + rect.width / 2;
+      break;
+    }
+    if (!hoveredSlot) return;
+
+    slots = Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorite-box"),
+    );
+    const hoveredIndex = slots.indexOf(hoveredSlot);
+    const currentIndex = slots.indexOf(placeholder);
+    if (hoveredIndex < 0 || currentIndex < 0) return;
+
+    const desiredIndex = placeBefore ? hoveredIndex : hoveredIndex + 1;
+    const moveForwardSteps = Math.max(0, desiredIndex - currentIndex - 1);
+    const moveBackwardSteps = Math.max(0, currentIndex - desiredIndex);
+    if (moveForwardSteps === 0 && moveBackwardSteps === 0) return;
+
+    const beforeMoveSlots = Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorite-box"),
+    );
+    const flipTargets = beforeMoveSlots.filter((n) => n !== placeholder);
+    const firstRects = new Map();
+    flipTargets.forEach((n) => firstRects.set(n, n.getBoundingClientRect()));
+
+    for (let i = 0; i < moveForwardSteps; i++) {
+      if (!swapWithNeighbor(1)) break;
+    }
+    for (let i = 0; i < moveBackwardSteps; i++) {
+      if (!swapWithNeighbor(-1)) break;
+    }
+
+    placeholder.classList.remove("entering");
+    void placeholder.offsetWidth;
+    placeholder.classList.add("entering");
+
+    flipTargets.forEach((n) => {
+      if (!n.isConnected) return;
+      const first = firstRects.get(n);
+      if (!first) return;
+      const last = n.getBoundingClientRect();
+      const dx = first.left - last.left;
+      const dy = first.top - last.top;
+      if (dx === 0 && dy === 0) return;
+      n.style.transition = "none";
+      n.style.transform = `translate(${dx}px, ${dy}px)`;
+      void n.offsetWidth;
+      requestAnimationFrame(() => {
+        n.style.transition = "transform 0.22s cubic-bezier(0.22, 1, 0.36, 1)";
+        n.style.transform = "";
+      });
+    });
+  }
+
+  _getFavoriteFinalIndexFromPlaceholder(pagesWrapper, placeholder) {
+    if (!pagesWrapper || !placeholder) return -1;
+    const slots = Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorite-box"),
+    );
+    const placeholderIndex = slots.indexOf(placeholder);
+    if (placeholderIndex < 0) return -1;
+    return slots
+      .slice(0, placeholderIndex)
+      .filter((slot) => !slot.classList.contains("is-ghost")).length;
+  }
+
+  _reorderFavorites(fromIndex, toIndex) {
+    const favs = [...this._getFavs()];
+    if (!favs.length) return false;
+    if (!Number.isInteger(fromIndex) || !Number.isInteger(toIndex))
+      return false;
+    if (fromIndex < 0 || fromIndex >= favs.length) return false;
+
+    let insertAt = Math.max(0, Math.min(toIndex, favs.length));
+    if (fromIndex === insertAt || fromIndex + 1 === insertAt) return false;
+
+    const [moved] = favs.splice(fromIndex, 1);
+    if (!moved) return false;
+    if (fromIndex < insertAt) insertAt -= 1;
+    favs.splice(insertAt, 0, moved);
+
+    this._saveFavs(favs);
+    this.refreshFavoritesUI();
+    this.updateButtonState();
+    ZenPickerMods.Toast.show(
+      "Reordered saved gradient",
+      "zen-favorite-reorder-toast",
+      1200,
+    );
+    return true;
+  }
+
+  _getCurrentState() {
+    const picker = this.picker;
+    if (!picker.dots?.length) return null;
+
+    return {
+      algo: picker.dots.length === 1 ? "floating" : picker.useAlgo || "",
+      lightness: picker.dots[0].lightness || 50,
+      numDots: picker.dots.length,
+      paletteType: picker.dots[0].type, // Preserving undefined allows 'Full Palette' logic
+      opacity: picker.currentOpacity,
+      texture: picker.currentTexture || 0,
+      rotation:
+        picker.dots.length > 1
+          ? picker._rotationModule?.currentRotation || -45
+          : null,
+      dots: picker.dots.map((d) => ({
+        id: d.ID,
+        x: Math.round(d.position.x),
+        y: Math.round(d.position.y),
+      })),
+    };
+  }
+
+  _isSame(f1, f2) {
+    if (!f1 || !f2) return false;
+
+    // Type-safe normalization (handling string vs number issues)
+    const n1 = {
+      numDots: Number(f1.numDots),
+      algo: f1.numDots === 1 ? "floating" : String(f1.algo),
+      paletteType: String(f1.paletteType || "undefined"),
+      opacity: Number(f1.opacity),
+      texture: Number(f1.texture || 0),
+      rotation: Number(f1.rotation ?? -45),
+      lightness: Number(f1.lightness),
+    };
+    const n2 = {
+      numDots: Number(f2.numDots),
+      algo: f2.numDots === 1 ? "floating" : String(f2.algo),
+      paletteType: String(f2.paletteType || "undefined"),
+      opacity: Number(f2.opacity),
+      texture: Number(f2.texture || 0),
+      rotation: Number(f2.rotation ?? -45),
+      lightness: Number(f2.lightness),
+    };
+
+    if (
+      n1.numDots !== n2.numDots ||
+      n1.algo !== n2.algo ||
+      n1.paletteType !== n2.paletteType
+    )
+      return false;
+    if (Math.abs(n1.opacity - n2.opacity) > 0.01) return false;
+    if (Math.abs(n1.texture - n2.texture) > 0.01) return false;
+    if (n1.numDots > 1 && Math.round(n1.rotation) !== Math.round(n2.rotation))
+      return false;
+    if (Math.round(n1.lightness) !== Math.round(n2.lightness)) return false;
+
+    return (
+      f1.dots.length === f2.dots.length &&
+      f1.dots.every((d, i) => {
+        const d2 = f2.dots[i];
+        return (
+          d.id === d2.id &&
+          Math.round(d.x) === Math.round(d2.x) &&
+          Math.round(d.y) === Math.round(d2.y)
+        );
+      })
+    );
+  }
+
+  toggleFavorite() {
+    const current = this._getCurrentState();
+    if (!current) return;
+
+    let favs = this._getFavs();
+    const existingIndex = favs.findIndex((f) => this._isSame(f, current));
+    let toastMsg = "";
+
+    if (existingIndex > -1) {
+      // Remove
+      favs.splice(existingIndex, 1);
+      toastMsg = "Gradient removed successfully!";
+    } else {
+      // Add
+      current._isNew = true; // Mark for pop-in animation
+      favs.unshift(current);
+      toastMsg = "Gradient saved successfully!";
+    }
+
+    this._saveFavs(favs);
+    this.updateButtonState();
+    this.refreshFavoritesUI();
+    if (toastMsg) {
+      ZenPickerMods.Toast.show(toastMsg, "zen-favorite-toggle-toast");
+    }
+  }
+
+  patchLogic(picker) {
+    const self = this;
+    const origHandle = picker.handleColorPositions.bind(picker);
+
+    picker.handleColorPositions = function (
+      colorPositions,
+      ignoreLegacy = false,
+    ) {
+      const res = origHandle(colorPositions, ignoreLegacy);
+      self.updateButtonState();
+      return res;
+    };
+
+    const origUpdate = picker.updateCurrentWorkspace.bind(picker);
+    picker.updateCurrentWorkspace = function (...args) {
+      const res = origUpdate.apply(this, args);
+      self.updateButtonState();
+      return res;
+    };
+
+    const opacitySlider = document.getElementById(
+      "PanelUI-zen-gradient-generator-opacity",
+    );
+    opacitySlider?.addEventListener("input", () => self.updateButtonState());
+
+    const textureWrapper = document.getElementById(
+      "PanelUI-zen-gradient-generator-texture-wrapper",
+    );
+    let _hadRecentTextureDrag = false;
+    textureWrapper?.addEventListener("mousedown", () => {
+      const onMove = () => {
+        _hadRecentTextureDrag = true;
+      };
+      const up = () => {
+        setTimeout(() => {
+          _hadRecentTextureDrag = false;
+        }, 200);
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", up);
+    });
+
+    // Opacity Reset - Center-click resets texture to 0 (matches reference implementation)
+    if (textureWrapper) {
+      if (!document.getElementById("zen-grain-reset-label")) {
+        const label = document.createElement("div");
+        label.id = "zen-grain-reset-label";
+        label.innerHTML = "<span>Reset</span>";
+        textureWrapper.appendChild(label);
+      }
+
+      textureWrapper.addEventListener("mousemove", (e) => {
+        const rect = textureWrapper.getBoundingClientRect();
+        const dx = e.clientX - (rect.left + rect.width / 2);
+        const dy = e.clientY - (rect.top + rect.height / 2);
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < rect.width * 0.32)
+          textureWrapper.classList.add("knob-hover");
+        else textureWrapper.classList.remove("knob-hover");
+      });
+
+      textureWrapper.addEventListener("mouseleave", () =>
+        textureWrapper.classList.remove("knob-hover"),
+      );
+
+      textureWrapper.addEventListener("click", (e) => {
+        if (
+          !textureWrapper.classList.contains("knob-hover") ||
+          _hadRecentTextureDrag
+        )
+          return;
+
+        // Reset texture to 0 using animateState for consistency
+        this._animateState(picker.currentOpacity, 0);
+        self.updateButtonState();
+      });
+    }
+
+    // Listen for preset clicks too
+    document
+      .getElementById("PanelUI-zen-gradient-generator-color-pages")
+      ?.addEventListener(
+        "click",
+        () => setTimeout(() => self.updateButtonState(), 10),
+        true,
+      );
+
+    // Patch Zen's pagination to handle extra pages
+    const pagesWrapper = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-pages",
+    );
+    const leftBtn = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-page-left",
+    );
+    const rightBtn = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-page-right",
+    );
+
+    if (pagesWrapper && leftBtn && rightBtn) {
+      // Force a re-init of pagination logic to account for new children length
+      const getPaginationModel = () => {
+        const width = Math.max(1, pagesWrapper.offsetWidth || 1);
+        const allPages = Array.from(pagesWrapper.children);
+        const isDraggingFavorites =
+          pagesWrapper.getAttribute("dragging-favorite") === "true";
+
+        // Only lock paging to favorites while an active reorder drag is running.
+        if (!isDraggingFavorites) {
+          return {
+            width,
+            firstIdx: 0,
+            lastIdx: Math.max(0, allPages.length - 1),
+          };
+        }
+
+        const favoritePages = Array.from(
+          pagesWrapper.querySelectorAll(".zen-picker-favorites-page"),
+        );
+        if (favoritePages.length) {
+          const firstFavoriteIdx = allPages.indexOf(favoritePages[0]);
+          return {
+            width,
+            firstIdx: Math.max(0, firstFavoriteIdx),
+            lastIdx: Math.max(0, firstFavoriteIdx + favoritePages.length - 1),
+          };
+        }
+        return {
+          width,
+          firstIdx: 0,
+          lastIdx: Math.max(0, allPages.length - 1),
+        };
+      };
+
+      const updatePagBtns = () => {
+        const model = getPaginationModel();
+        const currentPage = Math.round(pagesWrapper.scrollLeft / model.width);
+        leftBtn.disabled = currentPage <= model.firstIdx;
+        rightBtn.disabled = currentPage >= model.lastIdx;
+      };
+      this._updateFavoritePagination = updatePagBtns;
+      pagesWrapper.addEventListener("scroll", updatePagBtns);
+
+      // Patch Buttons to work with ACTUAL child indices
+      leftBtn.addEventListener(
+        "click",
+        (e) => {
+          e.stopImmediatePropagation();
+          const model = getPaginationModel();
+          const currentPage = Math.round(pagesWrapper.scrollLeft / model.width);
+          const nextPage = Math.max(model.firstIdx, currentPage - 1);
+          pagesWrapper.scrollLeft = nextPage * model.width;
+          updatePagBtns();
+        },
+        true,
+      );
+
+      rightBtn.addEventListener(
+        "click",
+        (e) => {
+          e.stopImmediatePropagation();
+          const model = getPaginationModel();
+          const currentPage = Math.round(pagesWrapper.scrollLeft / model.width);
+          const nextPage = Math.min(model.lastIdx, currentPage + 1);
+          pagesWrapper.scrollLeft = nextPage * model.width;
+          updatePagBtns();
+        },
+        true,
+      );
+
+      // Initial Favorites Load
+      this.refreshFavoritesUI();
+    }
+
+    this.updateButtonState();
+  }
+
+  updateButtonState() {
+    const btn = document.getElementById("zen-picker-favorite-save");
+    if (!btn || !this.picker) return;
+
+    const current = this._getCurrentState();
+    if (!current) {
+      btn.setAttribute("disabled", "true");
+      btn.classList.remove("is-favorite");
+      return;
+    }
+
+    btn.removeAttribute("disabled");
+
+    const favs = this._getFavs();
+    const isFav = favs.some((f) => this._isSame(f, current));
+
+    if (isFav) {
+      btn.classList.add("is-favorite");
+      btn
+        .querySelector(".zen-picker-favorite-heart")
+        ?.setAttribute("active", "true");
+      btn.setAttribute("tooltiptext", "Remove from Favorites");
+    } else {
+      btn.classList.remove("is-favorite");
+      btn
+        .querySelector(".zen-picker-favorite-heart")
+        ?.setAttribute("active", "false");
+      btn.setAttribute("tooltiptext", "Save to Favorites");
+    }
+  }
+
+  _getPreviewColor(x, y, type, lightnessVal) {
+    // Safe HSL to RGB without side-effects on picker state
+    const padding = 30,
+      dotHalfSize = 29;
+    const rect = { width: 380 + padding * 2, height: 380 + padding * 2 };
+    const centerX = rect.width / 2,
+      centerY = rect.height / 2;
+    const radius = (rect.width - padding) / 2;
+    let px = x + dotHalfSize,
+      py = y + dotHalfSize;
+    const dist = Math.sqrt((px - centerX) ** 2 + (py - centerY) ** 2);
+    let angle = (Math.atan2(py - centerY, px - centerX) * 180) / Math.PI;
+    if (angle < 0) angle += 360;
+    const normDist = 1 - Math.min(dist / radius, 1);
+    let h = angle / 360,
+      s,
+      l;
+
+    if (type === "explicit-lightness") {
+      s = normDist;
+      l = lightnessVal / 100;
+    } else {
+      // Dynamic lightness based on distance (Vibrant/Dark modes)
+      s = 0.9 + (1 - normDist) * 0.1;
+      l = 1 - normDist;
+    }
+
+    if (type === "explicit-black-white") {
+      s = 0;
+      l = 1 - normDist;
+    }
+
+    const { round } = Math;
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    let rv, gv, bv;
+    if (s === 0) rv = gv = bv = l;
+    else {
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+      rv = hue2rgb(p, q, h + 1 / 3);
+      gv = hue2rgb(p, q, h);
+      bv = hue2rgb(p, q, h - 1 / 3);
+    }
+    return `rgb(${round(rv * 255)}, ${round(gv * 255)}, ${round(bv * 255)})`;
+  }
+
+  refreshFavoritesUI() {
+    const pagesWrapper = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-pages",
+    );
+    if (!pagesWrapper) return;
+    pagesWrapper.removeAttribute("dragging-favorite");
+    document.getElementById("zen-picker-favorite-drag-overlay")?.remove();
+    this._dragFromIndex = null;
+    this._clearPageHoverTimer();
+    const leftBtn = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-page-left",
+    );
+    const rightBtn = document.getElementById(
+      "PanelUI-zen-gradient-generator-color-page-right",
+    );
+
+    // Cleanup old favorite pages
+    Array.from(
+      pagesWrapper.querySelectorAll(".zen-picker-favorites-page"),
+    ).forEach((p) => p.remove());
+
+    const favs = this._getFavs();
+    if (!favs.length) {
+      this._updateFavoritePagination?.();
+      return;
+    }
+
+    const createBox = (fav, slotIndex) => {
+      const box = document.createXULElement
+        ? document.createXULElement("box")
+        : document.createElement("box");
+      const isGhost = !fav;
+      if (isGhost) {
+        box.className = "zen-picker-favorite-box is-ghost";
+        box.style.minWidth = "26px";
+        box.style.minHeight = "26px";
+      } else {
+        box.className = "zen-picker-favorite-box";
+        box.setAttribute("data-num-dots", fav.numDots);
+        box.setAttribute("tooltiptext", "Click to apply. Drag to reorder.");
+        const colors = fav.dots.map((d) =>
+          this._getPreviewColor(d.x, d.y, fav.paletteType, fav.lightness),
+        );
+        if (fav.numDots === 1) {
+          box.style.setProperty("background", colors[0], "important");
+        } else {
+          colors.forEach((c, idx) => box.style.setProperty(`--c${idx + 1}`, c));
+        }
+        box.addEventListener("mousedown", (downEvent) => {
+          if (
+            downEvent.button !== 0 ||
+            downEvent.ctrlKey ||
+            downEvent.shiftKey ||
+            downEvent.altKey
+          ) {
+            return;
+          }
+          downEvent.preventDefault();
+          downEvent.stopPropagation();
+
+          const startX = downEvent.clientX;
+          const startY = downEvent.clientY;
+          let isReorderMode = false;
+          let isDragActive = false;
+          let isLanding = false;
+          let dragPlaceholder = null;
+          let dragOverlay = null;
+          let dragGhost = null;
+          let initialOffsetX = 0;
+          let initialOffsetY = 0;
+          let currentX = 0;
+          let currentY = 0;
+          let targetX = 0;
+          let targetY = 0;
+          this._dragFromIndex = slotIndex;
+
+          const cleanupDragStyles = () => {
+            box.classList.remove("zen-dragging");
+            box.classList.remove("zen-favorite-placeholder");
+            box.classList.remove("entering");
+            box.removeAttribute("dragged");
+            box.style.removeProperty("width");
+            box.style.removeProperty("height");
+            box.style.removeProperty("left");
+            box.style.removeProperty("top");
+          };
+
+          const finalizeDrop = () => {
+            isDragActive = false;
+            isLanding = false;
+            dragOverlay?.remove();
+            dragOverlay = null;
+            dragGhost?.remove();
+            dragGhost = null;
+
+            pagesWrapper.removeAttribute("dragging-favorite");
+            this._updateFavoritePagination?.();
+            this._clearPageHoverTimer();
+
+            const finalIndex = this._getFavoriteFinalIndexFromPlaceholder(
+              pagesWrapper,
+              dragPlaceholder,
+            );
+
+            cleanupDragStyles();
+            dragPlaceholder = null;
+
+            this._dragFromIndex = null;
+            this._clearDragStyles();
+            this._setDragClickSuppression(320);
+
+            if (finalIndex > -1) {
+              const insertionIndex =
+                slotIndex < finalIndex ? finalIndex + 1 : finalIndex;
+              this._reorderFavorites(slotIndex, insertionIndex);
+            }
+          };
+
+          const moveLoop = () => {
+            if (!isDragActive) return;
+            if (isLanding) {
+              const lerp = 0.3;
+              currentX += (targetX - currentX) * lerp;
+              currentY += (targetY - currentY) * lerp;
+            } else {
+              currentX = targetX;
+              currentY = targetY;
+            }
+            if (dragGhost) {
+              dragGhost.style.left = `${currentX}px`;
+              dragGhost.style.top = `${currentY}px`;
+            }
+
+            if (isLanding) {
+              const dist = Math.hypot(targetX - currentX, targetY - currentY);
+              if (dist < 0.6) {
+                finalizeDrop();
+                return;
+              }
+            }
+
+            requestAnimationFrame(moveLoop);
+          };
+
+          const startDrag = (originEvent) => {
+            if (isReorderMode) return;
+            isReorderMode = true;
+            isDragActive = true;
+            this._setDragClickSuppression();
+
+            const rect = box.getBoundingClientRect();
+            // Keep ghost visually attached to cursor (centered).
+            initialOffsetX = Math.round(rect.width / 2);
+            initialOffsetY = Math.round(rect.height / 2);
+            targetX = originEvent.clientX - initialOffsetX;
+            targetY = originEvent.clientY - initialOffsetY;
+            currentX = targetX;
+            currentY = targetY;
+
+            dragPlaceholder = box;
+            dragPlaceholder.classList.add("zen-favorite-placeholder");
+            dragPlaceholder.classList.add("entering");
+
+            dragOverlay = document.createElement("div");
+            dragOverlay.id = "zen-picker-favorite-drag-overlay";
+            dragOverlay.style.cssText =
+              "position:fixed;inset:0;z-index:999998;cursor:grabbing;pointer-events:auto;";
+            document.body.appendChild(dragOverlay);
+
+            dragGhost = box.cloneNode(true);
+            dragGhost.classList.remove("zen-favorite-placeholder");
+            dragGhost.classList.remove("entering");
+            dragGhost.classList.remove("zen-drop-target");
+            dragGhost.classList.remove("zen-favorite-pop-in");
+            dragGhost.setAttribute("dragged", "true");
+            dragGhost.style.position = "fixed";
+            dragGhost.style.pointerEvents = "none";
+            dragGhost.style.zIndex = "2147483647";
+            dragGhost.style.width = `${rect.width}px`;
+            dragGhost.style.height = `${rect.height}px`;
+            dragGhost.style.left = `${currentX}px`;
+            dragGhost.style.top = `${currentY}px`;
+            const popupLayer =
+              document.getElementById("mainPopupSet") ||
+              document.getElementById("PanelUI-zen-gradient-generator") ||
+              document.documentElement ||
+              document.body;
+            popupLayer.appendChild(dragGhost);
+
+            pagesWrapper.setAttribute("dragging-favorite", "true");
+            this._updateFavoritePagination?.();
+            requestAnimationFrame(moveLoop);
+          };
+
+          const moveHandler = (moveEvent) => {
+            if (
+              !isReorderMode &&
+              (Math.abs(moveEvent.clientX - startX) > 5 ||
+                Math.abs(moveEvent.clientY - startY) > 5)
+            ) {
+              startDrag(moveEvent);
+            }
+            if (!isReorderMode) return;
+
+            targetX = moveEvent.clientX - initialOffsetX;
+            targetY = moveEvent.clientY - initialOffsetY;
+
+            this._handleFavoritePageHover(
+              moveEvent.clientX,
+              moveEvent.clientY,
+              pagesWrapper,
+              leftBtn,
+              rightBtn,
+            );
+            const hoveringPageButton =
+              (leftBtn &&
+                !leftBtn.disabled &&
+                this._isPointInsideElement(
+                  moveEvent.clientX,
+                  moveEvent.clientY,
+                  leftBtn,
+                )) ||
+              (rightBtn &&
+                !rightBtn.disabled &&
+                this._isPointInsideElement(
+                  moveEvent.clientX,
+                  moveEvent.clientY,
+                  rightBtn,
+                ));
+            if (!hoveringPageButton) {
+              this._repositionDraggedFavoriteBox(
+                dragPlaceholder,
+                moveEvent.clientX,
+                moveEvent.clientY,
+                pagesWrapper,
+              );
+            }
+          };
+
+          const upHandler = () => {
+            document.removeEventListener("mousemove", moveHandler);
+            document.removeEventListener("mouseup", upHandler);
+
+            if (isReorderMode && dragPlaceholder) {
+              this._clearPageHoverTimer();
+              const finalRect = dragPlaceholder.getBoundingClientRect();
+              targetX = finalRect.left;
+              targetY = finalRect.top;
+              isLanding = true;
+            } else if (!this._suppressFavoriteClick) {
+              this._dragFromIndex = null;
+              this.applyFavorite(fav);
+            }
+          };
+
+          document.addEventListener("mousemove", moveHandler);
+          document.addEventListener("mouseup", upHandler);
+        });
+      }
+      box.setAttribute("data-fav-index", String(slotIndex));
+
+      if (!isGhost && fav._isNew) {
+        box.classList.add("zen-favorite-pop-in");
+        delete fav._isNew;
+        // Clean markers from cache and schedule save
+        const favs = this._getFavs();
+        favs.forEach((f) => delete f._isNew);
+        this._saveFavs(favs);
+      }
+      return box;
+    };
+
+    const chunks = [];
+    for (let i = 0; i < favs.length; i += 8) {
+      chunks.push(favs.slice(i, i + 8));
+    }
+
+    const firstNative = pagesWrapper.querySelector(
+      "hbox:not(.zen-picker-favorites-page)",
+    );
+
+    chunks.forEach((chunk, chunkIndex) => {
+      const page = document.createXULElement
+        ? document.createXULElement("hbox")
+        : document.createElement("hbox");
+      page.className = "zen-picker-favorites-page";
+      const chunkStart = chunkIndex * 8;
+      chunk.forEach((fav, idx) =>
+        page.appendChild(createBox(fav, chunkStart + idx)),
+      );
+      while (page.children.length < 8) {
+        const ghostIndex = chunkStart + page.children.length;
+        page.appendChild(createBox(null, ghostIndex));
+      }
+      pagesWrapper.insertBefore(page, firstNative);
+    });
+
+    this._updateFavoritePagination?.();
+  }
+
+  _animateState(toOp, toTex) {
+    const picker = this.picker;
+    const duration = 400;
+    const start = performance.now();
+    const fromOp = picker.currentOpacity;
+    const fromTex = picker.currentTexture || 0;
+
+    const step = (now) => {
+      const p = Math.min(1, (now - start) / duration);
+      const ease = 1 - Math.pow(1 - p, 4); // easeOutQuart for smoother finish
+
+      picker.currentOpacity = fromOp + (toOp - fromOp) * ease;
+
+      // Linear interpolation (prevents wrapping around for knob logic)
+      picker.currentTexture = fromTex + (toTex - fromTex) * ease;
+
+      // Sync UI only
+      picker.updateCurrentWorkspace(true);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  applyFavorite(fav) {
+    const picker = this.picker;
+    const ws = gZenWorkspaces.getActiveWorkspace();
+    if (!ws || !picker) return;
+
+    // 1. Establish Palette Context IMMEDIATELY (Shielded)
+    if (picker._paletteMod) {
+      picker._paletteMod._internalUpdate = true;
+
+      // Map saved type/lightness back to a known mode
+      const modeIdx = PaletteModule.MODES.findIndex(
+        (m) =>
+          m.type === fav.paletteType &&
+          (m.lightness === undefined ||
+            Math.abs(m.lightness - fav.lightness) < 5),
+      );
+      picker._paletteMod._selectedMode =
+        modeIdx > -1 ? PaletteModule.MODES[modeIdx] : null;
+
+      // Sync Zen's internal state early to influence native color calculations
+      picker._paletteMod.forceNativeLightness(fav.lightness);
+    }
+
+    // Trigger Transitions
+    picker.panel.classList.add("zen-favorites-restoring");
+
+    // Force Dial UI State Restoration
+    if (picker._rotationModule?.dialHandler) {
+      picker._rotationModule.dialHandler.classList.add(
+        "zen-programmatic-change",
+      );
+      setTimeout(
+        () =>
+          picker._rotationModule.dialHandler?.classList.remove(
+            "zen-programmatic-change",
+          ),
+        500,
+      );
+    }
+
+    const restoredTheme = {
+      type: "gradient",
+      gradientColors: fav.dots.map((d) => ({
+        c: [0, 0, 0],
+        isCustom: false,
+        algorithm: fav.algo,
+        isPrimary: false,
+        lightness: fav.lightness,
+        position: { x: d.x, y: d.y },
+        type: fav.paletteType,
+      })),
+      opacity: fav.opacity,
+      texture: fav.texture,
+      rotation: fav.rotation,
+      lightness: fav.lightness,
+    };
+
+    ws.theme = restoredTheme;
+    picker.getGradient(restoredTheme.gradientColors);
+    picker.useAlgo = fav.algo;
+
+    // Harmony Sync
+    if (fav.algo === "floating") {
+      picker.panel.setAttribute("zen-harmony-mode", "floating");
+      picker._floatingActive = true;
+    } else {
+      picker.panel.removeAttribute("zen-harmony-mode");
+      picker._floatingActive = false;
+    }
+
+    this._animateState(fav.opacity, fav.texture || 0);
+
+    if (picker._rotationModule) {
+      picker._rotationModule.currentRotation = fav.rotation ?? -45;
+      picker._rotationModule.applyRotation();
+    }
+
+    // Dot count adjustment (UI only)
+    if (fav.numDots < picker.dots.length) {
+      for (let i = fav.numDots; i < picker.dots.length; i++) {
+        picker.dots[i].element?.remove();
+      }
+      picker.dots = picker.dots.slice(0, fav.numDots);
+    }
+
+    // Phase 2: Native Restoration
+    const colorPositions = fav.dots.map((d) => ({
+      ID: d.id,
+      position: { x: d.x, y: d.y },
+      type: fav.paletteType,
+    }));
+
+    picker.handleColorPositions(colorPositions, true);
+
+    // Face 3: Forced Visual Parity (Bypassing Zen internal lag/resets)
+    // ONLY force common lightness for explicit-lightness modes (Pastel, Dark, etc.)
+    // Full Palette and B&W must keep their individual saved lightness values.
+    if (fav.paletteType === "explicit-lightness") {
+      picker.dots.forEach((d) => {
+        d.lightness = fav.lightness;
+      });
+      if (picker._paletteMod) {
+        picker._paletteMod.fastProjectLightness(fav.lightness);
+      }
+    }
+
+    picker.onWorkspaceChange(ws, true, ws.theme);
+    gZenWorkspaces.saveWorkspace(ws);
+
+    // Delay checking the favorite state to allow for dot population
+    setTimeout(() => this.updateButtonState(), 250);
+
+    setTimeout(() => {
+      picker.panel.classList.remove("zen-favorites-restoring");
+      if (picker._paletteMod) picker._paletteMod._internalUpdate = false;
+    }, 500);
+  }
+}
+
+// Start Execution
+if (document.readyState === "complete") {
+  ZenPickerMods.init();
+} else {
+  window.addEventListener("load", () => ZenPickerMods.init());
+}

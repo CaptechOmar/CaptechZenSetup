@@ -3,11 +3,12 @@
 @import "modules/essentials.css";
 /*@import "modules/contexticons.css";*/
 @import "modules/trackpad_gestures.css";
-@import "modules/Pinned-extensions.css";
+/*@import "modules/Pinned-extensions.css";*/
 @import "modules/menulogo.css";
 @import "modules/historyicon.css";
 @import "modules/emptywallpaper.css";
 @import "modules/pip.css";
+@import "modules/ctrl-tab.css";
 
 
 /* Remove new tab background color after 1.8b */
@@ -30,6 +31,7 @@
 	--button-hover-bg-color: rgba(0, 0, 0, 0.9) !important;
 	--panel-item-hover-bgcolor: var(--button-hover-bg-color) !important;
 	--in-content-sidebar-width:220px !important;
+  --background-color-canvas: var(--zen-main-browser-background-toolbar) !important;
   }
 
 /* Workspaces button */
@@ -46,7 +48,7 @@
 	.subviewbutton {
 	  border-radius: 6px !important;
 	  transition: background-color 0.2s ease !important;
-	  font-size: 14px !important;
+	  font-size: 18px !important;
 	  filter: grayscale(0%) !important;
 	  --toolbarbutton-hover-background: color-mix(in srgb, var(--zen-branding-bg-reverse) 10%, transparent 90%) !important;
   
@@ -78,6 +80,10 @@
 	  }
 	}
   }	
+
+.zen-workspace-icon{
+  font-size: 16px !important;
+}
 
 /* === BETTER CUSTOMIZE TOOLBAR ============================================================================================ */
 
@@ -178,24 +184,28 @@ tab[busy] {
 
 /* ctrl tab visuals and animations */
 #ctrlTab-panel {
-  --panel-background: var(--zen-main-browser-background-toolbar) !important;
+  --panel-background: var(--zen-primary-color) !important;
   transition: all 0.1s cubic-bezier(0.175, 0.885, 0.32, 1.1) 0.2s !important;
   scale: 0.5;
   border-radius: 2em !important;
+  
+  
 }
 
 #ctrlTab-panel:has(.ctrlTab-preview:not([hidden="true"])) {
-  scale: 0.95 !important;
+  scale: 1 !important;
+  
 }
 
 slot:nth-child(1) {
   border-radius: 1em !important;
-/*   padding: 0 !important; */
+  
 }
 
 .ctrlTab-preview-inner {
-  margin: 0 !important;
+  /* margin-top: -8px !important;*/
   transition: all 0.2s ease-in-out;
+  
 
   .ctrlTab-canvas {
     border-radius: 1em !important;
@@ -218,7 +228,7 @@ slot:nth-child(1) {
   }
 
   .ctrlTab-label {
-    margin-top: 1.5em !important;
+     margin-top: 1.5em !important;
   }
 }
 
@@ -227,7 +237,7 @@ slot:nth-child(1) {
   /* border: none !important;   */
   background-color: var(--sidebar-background-color) !important;
   border-radius: 1.5em !important;
-  scale: 1.03 !important;
+  scale: 1.09 !important;
 
   .ctrlTab-favicon-container {
     image {
@@ -250,14 +260,14 @@ button[aria-label="Mute tab"]{
    
     &:is([soundplaying], [muted], [activemedia-blocked]) {
 		margin: 0px 0px !important;
-		background: context-fill !important;
+		background: black !important;
 	}
 }
 
 
 @media {
   menupopup, panel {
-    --panel-background: var(--zen-main-browser-background-toolbar) !important;
+    --panel-background: var(--zen-primary-color) !important;
   }
   /* Fix text color on Firefox confirmation pop-ups when applying Zen colors on light mode */
   #confirmation-hint {
@@ -305,7 +315,14 @@ button[aria-label="Mute tab"]{
 .tab-list-item-secondary-label,
 .tabs-list-header,
 [id=zen-folder-tabs-list-search],
-[id=editBookmarkPanelContent]
+[id=editBookmarkPanelContent],
+[role="document"][aria-labelledby="select-translations-panel-header"],
+[id=full-page-translations-panel-lang-selection],
+.footer-button,
+[id=synced-tabs-client-0],
+[id=PanelUI-zen-emojis-picker-search],
+[id=context_addNote],
+.tab-preview-add-note
 {
   color: var(--toolbox-textcolor) !important;
 }
@@ -326,9 +343,21 @@ menupopup > menu::after {
 }
 
 findbar {
-  background: var(--zen-main-browser-background-toolbar) !important;
+  background: var(--zen-primary-color) !important;
 }
 
-[id=downloadsPanel]{
- 
+[id=commonDialog]{
+  background-color: var(--zen-primary-color) !important;
+}
+
+
+
+.zen-glance-sidebar-container {
+  & toolbarbutton {
+    background: light-dark(rgba(255, 255, 255, 0.3), rgba(20, 20, 20, 0.3)) !important;
+    &:hover {
+      background: light-dark(rgba(255, 255, 255, 0.7), rgba(15, 15, 15, 0.7)) !important; !important;
+    }
+  }
+  
 }
